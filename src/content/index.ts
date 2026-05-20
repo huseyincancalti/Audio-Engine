@@ -4,6 +4,7 @@ import { storageManager } from '@/core/storage/StorageManager';
 import {
   MessageType,
   type AudioSettings,
+  type EngineStatus,
   type MessageOfType,
   DEFAULT_AUDIO_SETTINGS,
 } from '@/types/index';
@@ -15,11 +16,9 @@ import {
 function shouldInit(): boolean {
   try {
     if (window === window.top) return true;
-
     const isYoutube = window.location.href.includes('youtube.com/embed/');
     const isVimeo = window.location.href.includes('player.vimeo.com');
     const hasMedia = document.querySelector('video, audio') !== null;
-
     return isYoutube || isVimeo || hasMedia;
   } catch {
     return false;
@@ -31,14 +30,17 @@ if (!shouldInit()) {
 } else {
   let isWokenUp = false;
 
+  // Per-tab runtime power state (does NOT affect global storage)
+  let tabPowerEnabled = true;
+
   const engineMap = new WeakMap<HTMLMediaElement, AudioEngine>();
-  
+
   // Single Source of Truth for Tab RAM settings
   let tabRuntimeSettings: AudioSettings = { ...DEFAULT_AUDIO_SETTINGS };
 
   let domObserver: MutationObserver | null = null;
   let osdHost: HTMLElement | null = null;
-  let osdRoot: ShadowRoot | null  = null;
+  let osdRoot: ShadowRoot | null = null;
   let osdHideTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Verify and evaluate engine bypass state cleanly
@@ -46,9 +48,7 @@ if (!shouldInit()) {
     try {
       const engines = Array.from(window.__audioEngineRegistry?.values() ?? []);
       const hasActiveEngine = engines.length > 0 && engines.some((e) => !e.getIsBypassed());
-
       if (!hasActiveEngine && engines.length > 0) {
-        // Fallback state cleanly since AudioEngine failed/bypassed due to host locks
         return DEFAULT_AUDIO_SETTINGS;
       }
     } catch (err) {
@@ -57,28 +57,43 @@ if (!shouldInit()) {
     return tabRuntimeSettings;
   }
 
+  // Compute engine status badge for the Popup UI
+  function getEngineStatus(): EngineStatus {
+    try {
+      const engines = Array.from(window.__audioEngineRegistry?.values() ?? []);
+      if (engines.length === 0) return 'sleeping';
+      const allBypassed = engines.every((e) => e.getIsBypassed());
+      if (allBypassed) return 'bypassed';
+      return 'active';
+    } catch {
+      return 'sleeping';
+    }
+  }
+
   // Publish current settings back to background session cache
   function syncToBackground(): void {
     EventBus.publish({
       type: MessageType.STATE_RESPONSE,
-      payload: { settings: getEffectiveSettings() },
+      payload: { settings: getEffectiveSettings(), isPowerEnabled: tabPowerEnabled, engineStatus: getEngineStatus() },
     }).catch(() => {});
   }
 
   async function attachEngine(media: HTMLMediaElement): Promise<void> {
     if (media.dataset.audioEngineHooked === 'true' || engineMap.has(media)) return;
-
     try {
       media.dataset.audioEngineHooked = 'true';
-
       const engine = new AudioEngine(media);
       engine.applySettings(tabRuntimeSettings);
       engineMap.set(media, engine);
-
       if (!window.__audioEngineRegistry) {
         window.__audioEngineRegistry = new Map();
       }
       window.__audioEngineRegistry.set(media, engine);
+
+      // Immediately honour current power state for newly attached engines
+      if (!tabPowerEnabled) {
+        engine.disableEngine();
+      }
 
       console.log('[Audio-Engine] AudioEngine attached to', media.tagName, media.src || media.currentSrc);
     } catch (err) {
@@ -123,7 +138,6 @@ if (!shouldInit()) {
     isWokenUp = true;
     console.log('[Audio-Engine] Initializing on-demand listeners & capturing media elements.');
 
-    // Fetch stored site-specific settings on first popup wake up
     try {
       const settings = await storageManager.resolveSettings(location.href);
       tabRuntimeSettings = settings;
@@ -133,7 +147,6 @@ if (!shouldInit()) {
 
     scanAndAttach();
 
-    // Event-Driven Capture for dynamic play
     document.addEventListener('play', (e) => {
       try {
         if (e.target instanceof HTMLMediaElement) {
@@ -158,7 +171,6 @@ if (!shouldInit()) {
       }
     }, true);
 
-    // Observer for removed nodes teardown
     domObserver = new MutationObserver((mutations) => {
       try {
         for (const mutation of mutations) {
@@ -177,15 +189,11 @@ if (!shouldInit()) {
     });
 
     try {
-      domObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-      });
+      domObserver.observe(document.documentElement, { childList: true, subtree: true });
     } catch (err) {
       console.error('[Audio-Engine-Error] Failed to observe documentElement:', err);
     }
 
-    // Gesture unlock listeners
     const unlockGesture = () => {
       try {
         if (window.__audioEngineRegistry) {
@@ -206,7 +214,6 @@ if (!shouldInit()) {
     window.addEventListener('click', unlockGesture, true);
     window.addEventListener('keydown', unlockGesture, true);
 
-    // Keyboard Hotkeys
     const enum HotkeyAction {
       VOLUME_UP   = 'VOLUME_UP',
       VOLUME_DOWN = 'VOLUME_DOWN',
@@ -266,7 +273,7 @@ if (!shouldInit()) {
         }
 
         tabRuntimeSettings = next;
-        if (window.__audioEngineRegistry) {
+        if (tabPowerEnabled && window.__audioEngineRegistry) {
           for (const engine of window.__audioEngineRegistry.values()) {
             engine.applySettings(next);
           }
@@ -289,7 +296,6 @@ if (!shouldInit()) {
       try {
         const tag = (e.target as HTMLElement).tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
-
         for (const binding of HOTKEY_BINDINGS) {
           if (matchesHotkey(e, binding)) {
             e.preventDefault();
@@ -302,7 +308,6 @@ if (!shouldInit()) {
       }
     });
 
-    // SPA url tracker
     let lastUrl = location.href;
     const onUrlChange = () => {
       try {
@@ -319,25 +324,18 @@ if (!shouldInit()) {
     window.addEventListener('popstate', onUrlChange);
     const _pushState = history.pushState.bind(history);
     const _replaceState = history.replaceState.bind(history);
-    history.pushState = (...args) => {
-      _pushState(...args);
-      onUrlChange();
-    };
-    history.replaceState = (...args) => {
-      _replaceState(...args);
-      onUrlChange();
-    };
+    history.pushState = (...args) => { _pushState(...args); onUrlChange(); };
+    history.replaceState = (...args) => { _replaceState(...args); onUrlChange(); };
 
-    // OSD shadow host builder
-    const OSD_SHADOW_HOST_ID = '__audio-engine-osd__';
-    const OSD_HIDE_DELAY_MS  = 2200;
+    const OSD_HIDE_DELAY_MS = 2200;
 
     function ensureOsd(): ShadowRoot {
       if (osdRoot) return osdRoot;
       const host = document.createElement('div');
-      host.id = OSD_SHADOW_HOST_ID;
+      host.id = '__audio-engine-osd__';
       Object.assign(host.style, {
-        position: 'fixed', top: '0', left: '0', width: '0', height: '0', zIndex: '2147483647', pointerEvents: 'none'
+        position: 'fixed', top: '0', left: '0', width: '0', height: '0',
+        zIndex: '2147483647', pointerEvents: 'none',
       });
       const shadow = host.attachShadow({ mode: 'closed' });
       const style = document.createElement('style');
@@ -432,45 +430,61 @@ if (!shouldInit()) {
     } satisfies MessageOfType<MessageType.CONTENT_READY>).catch(() => {});
   }
 
-  // ── EventBus Message Subscriptions ────────────────-------------------------
+  // ── EventBus Message Subscriptions ─────────────────────────────────────────
 
   try {
-    // GET_CURRENT_STATE - Fetch tab's actual running state
     EventBus.subscribe(MessageType.GET_CURRENT_STATE, () => {
       try {
         if (!isWokenUp) {
           wakeUpEngine().catch(() => {});
         }
-        
         const settings = getEffectiveSettings();
-
-        // Reply via STATE_RESPONSE containing exact configs
+        const engineStatus = getEngineStatus();
         EventBus.publish({
           type: MessageType.STATE_RESPONSE,
-          payload: { settings },
+          payload: { settings, isPowerEnabled: tabPowerEnabled, engineStatus },
         } satisfies MessageOfType<MessageType.STATE_RESPONSE>).catch((err) => {
           console.error('[Audio-Engine-Error] Failed to publish STATE_RESPONSE:', err);
         });
-
-        // Also return synchronously for the message response channel
-        return { settings };
+        return { settings, isPowerEnabled: tabPowerEnabled, engineStatus };
       } catch (err) {
         console.error('[Audio-Engine-Error] GET_CURRENT_STATE handler failed:', err);
-        return { settings: DEFAULT_AUDIO_SETTINGS };
+        return { settings: DEFAULT_AUDIO_SETTINGS, isPowerEnabled: true, engineStatus: 'sleeping' as const };
       }
     });
 
-    // SET_LIVE_VOLUME - Intercept volume changes exclusively
-    EventBus.subscribe(MessageType.SET_LIVE_VOLUME, (msg) => {
+    EventBus.subscribe(MessageType.SET_POWER_STATE, (msg) => {
       try {
-        const { volume } = msg.payload;
-        tabRuntimeSettings = { ...tabRuntimeSettings, volume };
+        const { enabled } = msg.payload;
+        tabPowerEnabled = enabled;
+        console.log(`[Audio-Engine] Power state set to: ${enabled}`);
 
         if (window.__audioEngineRegistry) {
           for (const engine of window.__audioEngineRegistry.values()) {
             try {
-              engine.setVolume(volume);
+              if (enabled) {
+                engine.enableEngine(tabRuntimeSettings);
+              } else {
+                engine.disableEngine();
+              }
             } catch (err) {
+              console.error('[Audio-Engine-Error] Failed to toggle engine power:', err);
+            }
+          }
+        }
+        syncToBackground();
+      } catch (err) {
+        console.error('[Audio-Engine-Error] SET_POWER_STATE handler failed:', err);
+      }
+    });
+
+    EventBus.subscribe(MessageType.SET_LIVE_VOLUME, (msg) => {
+      try {
+        const { volume } = msg.payload;
+        tabRuntimeSettings = { ...tabRuntimeSettings, volume };
+        if (tabPowerEnabled && window.__audioEngineRegistry) {
+          for (const engine of window.__audioEngineRegistry.values()) {
+            try { engine.setVolume(volume); } catch (err) {
               console.error('[Audio-Engine-Error] Failed to set volume on engine:', err);
             }
           }
@@ -481,17 +495,13 @@ if (!shouldInit()) {
       }
     });
 
-    // SET_LIVE_EQ - Intercept EQ & Mono changes exclusively
     EventBus.subscribe(MessageType.SET_LIVE_EQ, (msg) => {
       try {
         const { eqBands, isEqEnabled, isMono } = msg.payload;
         tabRuntimeSettings = { ...tabRuntimeSettings, eqBands, isEqEnabled, isMono };
-
-        if (window.__audioEngineRegistry) {
+        if (tabPowerEnabled && window.__audioEngineRegistry) {
           for (const engine of window.__audioEngineRegistry.values()) {
-            try {
-              engine.applySettings(tabRuntimeSettings);
-            } catch (err) {
+            try { engine.applySettings(tabRuntimeSettings); } catch (err) {
               console.error('[Audio-Engine-Error] Failed to apply EQ/Mono on engine:', err);
             }
           }
@@ -514,7 +524,7 @@ if (!shouldInit()) {
       try {
         if (!isWokenUp) return;
         tabRuntimeSettings = msg.payload.settings;
-        if (window.__audioEngineRegistry) {
+        if (tabPowerEnabled && window.__audioEngineRegistry) {
           for (const engine of window.__audioEngineRegistry.values()) {
             engine.applySettings(tabRuntimeSettings);
           }
@@ -535,6 +545,7 @@ if (!shouldInit()) {
         document.querySelectorAll<HTMLMediaElement>('video, audio').forEach(detachEngine);
         if (osdHost) osdHost.remove();
         EventBus.unsubscribeAll(MessageType.GET_CURRENT_STATE);
+        EventBus.unsubscribeAll(MessageType.SET_POWER_STATE);
         EventBus.unsubscribeAll(MessageType.SET_LIVE_VOLUME);
         EventBus.unsubscribeAll(MessageType.SET_LIVE_EQ);
         EventBus.unsubscribeAll(MessageType.WAKE_UP_ENGINE);

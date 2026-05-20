@@ -25,14 +25,25 @@ interface PipelineNodes {
 }
 
 export class AudioEngine {
+  // ── Smoothing time-constants ────────────────────────────────────────────
+  // Tight 15 ms exponential ramp for volume – inaudible lag, zero pops.
+  private static readonly GAIN_TC       = 0.015;
+  // Slightly wider 20 ms ramp for EQ band gains – avoids zipper noise.
+  private static readonly EQ_TC         = 0.020;
+  // 10 ms used for passthrough-reset (disableEngine / power-off).
+  private static readonly PASSTHROUGH_TC = 0.010;
+
   private ctx!: AudioContext;
   private nodes?: PipelineNodes;
   private isEqConnected: boolean = false;
   private isPannerConnected: boolean = false;
   private watchdogId: ReturnType<typeof setInterval> | null = null;
-  
+
   // 3. Strict Non-Blocking Passthrough Strategy flag
   private isBypassed: boolean = false;
+
+  // Active / Power state flag
+  private isActive: boolean = true;
 
   constructor(mediaElement: HTMLMediaElement) {
     if (!window.__audioEngineRegistry) {
@@ -102,6 +113,44 @@ export class AudioEngine {
     return this.isBypassed;
   }
 
+  public getIsActive(): boolean {
+    return this.isActive;
+  }
+
+  // Smoothly reverts audio processing to flat native defaults (no crackle)
+  disableEngine(): void {
+    if (this.isBypassed) return;
+    try {
+      this.isActive = false;
+      if (this.nodes) {
+        const now = this.ctx.currentTime;
+        const tc  = AudioEngine.PASSTHROUGH_TC;
+        this.nodes.gain.gain.cancelScheduledValues(now);
+        this.nodes.gain.gain.setTargetAtTime(1.0, now, tc);
+        this.nodes.eqFilters.forEach((filter) => {
+          filter.gain.cancelScheduledValues(now);
+          filter.gain.setTargetAtTime(0, now, tc);
+        });
+        this.nodes.panner.pan.cancelScheduledValues(now);
+        this.nodes.panner.pan.setTargetAtTime(0, now, tc);
+      }
+      console.log('[Audio-Engine] Engine disabled (audio reverted to native defaults).');
+    } catch (err) {
+      console.error('[Audio-Engine-Error] disableEngine failed:', err);
+    }
+  }
+
+  enableEngine(settings: AudioSettings): void {
+    if (this.isBypassed) return;
+    try {
+      this.isActive = true;
+      this.applySettings(settings);
+      console.log('[Audio-Engine] Engine enabled (re-applied last settings).');
+    } catch (err) {
+      console.error('[Audio-Engine-Error] enableEngine failed:', err);
+    }
+  }
+
   private rebuildPipeline(settings: AudioSettings): void {
     if (this.isBypassed || !this.nodes) return;
 
@@ -164,7 +213,7 @@ export class AudioEngine {
   }
 
   applySettings(settings: AudioSettings): void {
-    if (this.isBypassed) {
+    if (this.isBypassed || !this.isActive) {
       return;
     }
 
@@ -177,19 +226,28 @@ export class AudioEngine {
 
       if (!this.nodes) return;
 
-      this.nodes.gain.gain.setTargetAtTime(settings.volume, this.ctx.currentTime, 0.01);
+      const now    = this.ctx.currentTime;
+      const gainTc = AudioEngine.GAIN_TC;
+      const eqTc   = AudioEngine.EQ_TC;
+
+      // Cancel any stale scheduled automation before ramping – prevents
+      // compounding curves when the user drags sliders rapidly.
+      this.nodes.gain.gain.cancelScheduledValues(now);
+      this.nodes.gain.gain.setTargetAtTime(settings.volume, now, gainTc);
 
       if (settings.isEqEnabled) {
         settings.eqBands.forEach((gainDb, i) => {
           const filter = this.nodes?.eqFilters[i];
           if (filter) {
-            filter.gain.setTargetAtTime(gainDb, this.ctx.currentTime, 0.01);
+            filter.gain.cancelScheduledValues(now);
+            filter.gain.setTargetAtTime(gainDb, now, eqTc);
           }
         });
       }
 
       if (settings.isMono) {
-        this.nodes.panner.pan.setTargetAtTime(0, this.ctx.currentTime, 0.01);
+        this.nodes.panner.pan.cancelScheduledValues(now);
+        this.nodes.panner.pan.setTargetAtTime(0, now, gainTc);
       }
 
       const topologyChanged =
@@ -209,20 +267,24 @@ export class AudioEngine {
   }
 
   setVolume(value: number): void {
-    if (this.isBypassed || !this.nodes) return;
+    if (this.isBypassed || !this.nodes || !this.isActive) return;
     try {
-      this.nodes.gain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.01);
+      const now = this.ctx.currentTime;
+      this.nodes.gain.gain.cancelScheduledValues(now);
+      this.nodes.gain.gain.setTargetAtTime(value, now, AudioEngine.GAIN_TC);
     } catch (err) {
       console.error('[Audio-Engine-Error] setVolume failed:', err);
     }
   }
 
   setEqBand(bandIndex: number, gainDb: number): void {
-    if (this.isBypassed || !this.nodes) return;
+    if (this.isBypassed || !this.nodes || !this.isActive) return;
     try {
       const filter = this.nodes.eqFilters[bandIndex];
       if (filter) {
-        filter.gain.setTargetAtTime(gainDb, this.ctx.currentTime, 0.01);
+        const now = this.ctx.currentTime;
+        filter.gain.cancelScheduledValues(now);
+        filter.gain.setTargetAtTime(gainDb, now, AudioEngine.EQ_TC);
       }
     } catch (err) {
       console.error('[Audio-Engine-Error] setEqBand failed:', err);
@@ -234,7 +296,7 @@ export class AudioEngine {
   }
 
   async resumeContext(): Promise<void> {
-    if (this.isBypassed) return;
+    if (this.isBypassed || !this.isActive) return;
     try {
       if (this.ctx && this.ctx.state === 'suspended') {
         await this.ctx.resume();
@@ -245,7 +307,7 @@ export class AudioEngine {
   }
 
   autoResume(): void {
-    if (this.isBypassed) return;
+    if (this.isBypassed || !this.isActive) return;
     try {
       if (this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});

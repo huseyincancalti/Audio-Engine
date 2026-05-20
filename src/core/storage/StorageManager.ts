@@ -197,6 +197,29 @@ export class StorageManager {
     }
   }
 
+  // Find the persisted rule whose pattern matches the given domain/hostname.
+  // Returns undefined when no custom rule exists for this site.
+  async findRuleForDomain(url: string): Promise<UrlRule | undefined> {
+    try {
+      const rules = await this.getRules();
+      for (const rule of rules) {
+        try {
+          if (matchesExact(url, rule.pattern)) return rule;
+        } catch {}
+      }
+      for (const rule of rules) {
+        try {
+          if (matchesDomain(url, rule.pattern)) return rule;
+        } catch {}
+      }
+      return undefined;
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager findRuleForDomain failed:', err);
+      return undefined;
+    }
+  }
+
+
   // 3. Fallback Hierarchy Resolution Order:
   // Check exact URL -> Check Domain -> Fallback to Default Global Config
   async resolveSettings(url: string): Promise<AudioSettings> {

@@ -6,6 +6,8 @@
 
 export type EqBandGain = number;
 
+export type EngineStatus = 'active' | 'sleeping' | 'bypassed';
+
 export interface AudioSettings {
   readonly volume: number;
   readonly eqBands: readonly EqBandGain[];
@@ -172,7 +174,7 @@ export interface MsgGetCurrentState {
 
 export interface MsgStateResponse {
   readonly type: MessageType.STATE_RESPONSE;
-  readonly payload: { readonly settings: AudioSettings; readonly isPowerEnabled: boolean };
+  readonly payload: { readonly settings: AudioSettings; readonly isPowerEnabled: boolean; readonly engineStatus: EngineStatus };
 }
 
 export interface MsgSetLiveVolume {
