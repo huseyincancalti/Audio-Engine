@@ -4,22 +4,12 @@
 // Audio
 // ---------------------------------------------------------------------------
 
-/** Represents a single EQ band's gain value in decibels (-12 to +12 dB). */
 export type EqBandGain = number;
 
-/**
- * Full audio processing configuration applied to a tab or as a default rule.
- * All fields are required – no partial state leaks into the audio pipeline.
- */
 export interface AudioSettings {
-  /** Volume multiplier. 1.0 = 100%, 10.0 = 1000%. Range: [0, 10]. */
   readonly volume: number;
-  /** Gain values (dB) for each of the 10 EQ bands.
-   *  Bands (Hz): 32, 64, 125, 250, 500, 1k, 2k, 4k, 8k, 16k. */
   readonly eqBands: readonly EqBandGain[];
-  /** When true the stereo signal is summed to mono. */
   readonly isMono: boolean;
-  /** Whether the EQ stage is active; if false, EQ nodes are bypassed. */
   readonly isEqEnabled: boolean;
 }
 
@@ -34,23 +24,16 @@ export const DEFAULT_AUDIO_SETTINGS: Readonly<AudioSettings> = Object.freeze({
 // URL Rule
 // ---------------------------------------------------------------------------
 
-/** Priority tiers – lower numeric value wins (Exact > Domain > Global). */
 export const enum RulePriority {
   GLOBAL = 0,
   DOMAIN = 10,
   EXACT = 20,
 }
 
-/**
- * A mapping from a URL pattern to a specific AudioSettings configuration.
- * Pattern may be an exact URL string or a domain string (e.g. "youtube.com").
- */
 export interface UrlRule {
   readonly id: string;
-  /** Exact URL or domain string used for matching. Supports regex. */
   readonly pattern: string;
   readonly settings: AudioSettings;
-  /** Higher value wins when multiple rules match. */
   readonly priority: RulePriority | number;
   readonly createdAt: number;
 }
@@ -59,12 +42,10 @@ export interface UrlRule {
 // Extension State
 // ---------------------------------------------------------------------------
 
-/** Snapshot of the entire extension state persisted to chrome.storage. */
 export interface ExtensionState {
   readonly version: number;
   readonly defaultSettings: AudioSettings;
   readonly rules: readonly UrlRule[];
-  /** Global on/off kill-switch. */
   readonly isEnabled: boolean;
 }
 
@@ -81,7 +62,6 @@ export const DEFAULT_EXTENSION_STATE: Readonly<ExtensionState> = Object.freeze({
 // Message Bus Payload Types
 // ---------------------------------------------------------------------------
 
-/** All message types exchanged between popup, background, and content script. */
 export const enum MessageType {
   // Background → Content
   APPLY_SETTINGS = 'APPLY_SETTINGS',
@@ -93,6 +73,7 @@ export const enum MessageType {
   UPDATE_RULE = 'UPDATE_RULE',
   DELETE_RULE = 'DELETE_RULE',
   TOGGLE_ENABLED = 'TOGGLE_ENABLED',
+  SAVE_RULE = 'SAVE_RULE',
 
   // Content → Background
   CONTENT_READY = 'CONTENT_READY',
@@ -100,10 +81,24 @@ export const enum MessageType {
 
   // Background → Popup (state push)
   STATE_CHANGED = 'STATE_CHANGED',
+
+  // Popup → Content (isolated routing)
+  WAKE_UP_ENGINE = 'WAKE_UP_ENGINE',
+  LIVE_UPDATE = 'LIVE_UPDATE',
+  GET_TAB_SETTINGS = 'GET_TAB_SETTINGS',
+
+  // Request-Response and Live updates
+  GET_CURRENT_STATE = 'GET_CURRENT_STATE',
+  STATE_RESPONSE = 'STATE_RESPONSE',
+  SET_LIVE_VOLUME = 'SET_LIVE_VOLUME',
+  SET_LIVE_EQ = 'SET_LIVE_EQ',
+
+  // Power Toggle
+  SET_POWER_STATE = 'SET_POWER_STATE',
 }
 
 // ---------------------------------------------------------------------------
-// Discriminated union of all message shapes – no `any` allowed.
+// Discriminated union of all message shapes
 // ---------------------------------------------------------------------------
 
 export interface MsgApplySettings {
@@ -140,6 +135,11 @@ export interface MsgToggleEnabled {
   readonly payload: { readonly isEnabled: boolean };
 }
 
+export interface MsgSaveRule {
+  readonly type: MessageType.SAVE_RULE;
+  readonly payload: { readonly pattern: string; readonly settings: AudioSettings };
+}
+
 export interface MsgContentReady {
   readonly type: MessageType.CONTENT_READY;
 }
@@ -153,11 +153,47 @@ export interface MsgStateChanged {
   readonly payload: { readonly state: ExtensionState };
 }
 
-/**
- * The discriminated union of every valid message that can be sent over the
- * extension's message bus. Adding a new message type requires extending this
- * union – the TypeScript compiler will enforce exhaustive handling.
- */
+export interface MsgWakeUpEngine {
+  readonly type: MessageType.WAKE_UP_ENGINE;
+}
+
+export interface MsgLiveUpdate {
+  readonly type: MessageType.LIVE_UPDATE;
+  readonly payload: { readonly settings: AudioSettings };
+}
+
+export interface MsgGetTabSettings {
+  readonly type: MessageType.GET_TAB_SETTINGS;
+}
+
+export interface MsgGetCurrentState {
+  readonly type: MessageType.GET_CURRENT_STATE;
+}
+
+export interface MsgStateResponse {
+  readonly type: MessageType.STATE_RESPONSE;
+  readonly payload: { readonly settings: AudioSettings; readonly isPowerEnabled: boolean };
+}
+
+export interface MsgSetLiveVolume {
+  readonly type: MessageType.SET_LIVE_VOLUME;
+  readonly payload: { readonly volume: number };
+}
+
+export interface MsgSetLiveEq {
+  readonly type: MessageType.SET_LIVE_EQ;
+  readonly payload: {
+    readonly eqBands: readonly number[];
+    readonly isEqEnabled: boolean;
+    readonly isMono: boolean;
+  };
+}
+
+export interface MsgSetPowerState {
+  readonly type: MessageType.SET_POWER_STATE;
+  readonly payload: { readonly enabled: boolean };
+}
+
 export type MessagePayload =
   | MsgApplySettings
   | MsgGetState
@@ -166,11 +202,19 @@ export type MessagePayload =
   | MsgUpdateRule
   | MsgDeleteRule
   | MsgToggleEnabled
+  | MsgSaveRule
   | MsgContentReady
   | MsgRequestSettings
-  | MsgStateChanged;
+  | MsgStateChanged
+  | MsgWakeUpEngine
+  | MsgLiveUpdate
+  | MsgGetTabSettings
+  | MsgGetCurrentState
+  | MsgStateResponse
+  | MsgSetLiveVolume
+  | MsgSetLiveEq
+  | MsgSetPowerState;
 
-/** Map each MessageType to its concrete message shape for lookup. */
 export type MessageOfType<T extends MessageType> = Extract<
   MessagePayload,
   { type: T }

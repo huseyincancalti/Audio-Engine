@@ -1,22 +1,20 @@
 // src/popup/Popup.tsx
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { EventBus } from '@/core/messages/EventBus';
+import { storageManager } from '@/core/storage/StorageManager';
 import {
   MessageType,
   type ExtensionState,
   type AudioSettings,
   type UrlRule,
   DEFAULT_EXTENSION_STATE,
+  DEFAULT_AUDIO_SETTINGS,
   type MessageOfType,
 } from '@/types/index';
 import { Dashboard } from './components/Dashboard';
 import { Equalizer } from './components/Equalizer';
 import { UrlRules } from './components/UrlRules';
-
-// ---------------------------------------------------------------------------
-// Tab definitions
-// ---------------------------------------------------------------------------
 
 type TabId = 'dashboard' | 'equalizer' | 'rules';
 
@@ -32,199 +30,206 @@ const TABS: readonly Tab[] = [
   { id: 'rules',     label: 'URL Rules',  icon: '📋' },
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Fetch the active tab's URL from chrome.tabs API. */
-async function getActiveTabUrl(): Promise<string> {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    return tab?.url ?? '';
-  } catch (err) {
-    console.error('[Audio-Engine-Error] getActiveTabUrl failed:', err);
-    return '';
-  }
-}
-
-/** Debounce helper – delays fn execution until `ms` ms after the last call. */
-function useDebounce<T extends unknown[]>(
-  fn: (...args: T) => void,
-  ms: number,
-): (...args: T) => void {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  return useCallback(
-    (...args: T) => {
-      try {
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => {
-          try {
-            fn(...args);
-          } catch (err) {
-            console.error('[Audio-Engine-Error] Debounced function execution failed:', err);
-          }
-        }, ms);
-      } catch (err) {
-        console.error('[Audio-Engine-Error] useDebounce invocation failed:', err);
-      }
-    },
-    [fn, ms],
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main Popup component
-// ---------------------------------------------------------------------------
-
 export const Popup: React.FC = () => {
-  const [state, setState]         = useState<ExtensionState>(DEFAULT_EXTENSION_STATE);
+  const [state, setState] = useState<ExtensionState>(DEFAULT_EXTENSION_STATE);
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [currentUrl, setCurrentUrl] = useState('');
-  const [loading, setLoading]     = useState(true);
+  const [loading, setLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
-  // ── Boot: load state + active tab URL ─────────────────────────────────────
+  // 1. Strict Tab-ID Scoping & Transient Tab State
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
+  const [tabSettings, setTabSettings] = useState<AudioSettings>(DEFAULT_AUDIO_SETTINGS);
+  const [isTabReady, setIsTabReady] = useState(false);
+
+  // ── On Mount: Discover active tab and request current running settings ──────
 
   useEffect(() => {
     let cancelled = false;
 
+    // Listen strictly for STATE_RESPONSE
+    const off = EventBus.subscribe(MessageType.STATE_RESPONSE, (msg) => {
+      if (cancelled) return;
+      console.log('[Audio-Engine] STATE_RESPONSE received:', msg.payload.settings);
+      setTabSettings(msg.payload.settings);
+      setIsTabReady(true);
+    });
+
     try {
-      Promise.all([
-        EventBus.publish({
-          type: MessageType.GET_STATE,
-        } satisfies MessageOfType<MessageType.GET_STATE>) as Promise<ExtensionState>,
-        getActiveTabUrl(),
-      ])
-        .then(([loadedState, url]) => {
-          if (cancelled) return;
-          try {
-            setState(loadedState ?? DEFAULT_EXTENSION_STATE);
-            setCurrentUrl(url);
-          } catch (err) {
-            console.error('[Audio-Engine-Error] Popup state initialization failed:', err);
-          }
-        })
-        .catch((err) => {
-          console.error('[Audio-Engine-Error] Popup boot promise resolution failed:', err);
-          setConnectionError('Extension context was invalidated or disconnected.');
-        })
-        .finally(() => {
-          if (!cancelled) {
-            try {
-              setLoading(false);
-            } catch (err) {
-              console.error('[Audio-Engine-Error] Popup boot finalization failed:', err);
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (cancelled) return;
+        const activeTab = tabs[0];
+        if (activeTab && activeTab.id != null) {
+          const tabId = activeTab.id;
+          setActiveTabId(tabId);
+          setCurrentUrl(activeTab.url ?? '');
+
+          // Dispatches GET_CURRENT_STATE only. Does not send setup parameters.
+          chrome.tabs.sendMessage(
+            tabId,
+            { type: MessageType.GET_CURRENT_STATE } satisfies MessageOfType<MessageType.GET_CURRENT_STATE>,
+            () => {
+              const err = chrome.runtime.lastError;
+              if (err) {
+                console.log('[Audio-Engine] GET_CURRENT_STATE failed (target tab not ready):', err.message);
+                setIsTabReady(false);
+              }
             }
-          }
-        });
+          );
+        }
+      });
     } catch (err) {
-      console.error('[Audio-Engine-Error] Popup boot setup failed:', err);
-      setConnectionError('Extension context was invalidated or disconnected.');
+      console.error('[Audio-Engine-Error] Tab query failed:', err);
+      setIsTabReady(false);
     }
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      off();
+    };
   }, []);
 
-  // ── Subscribe to state changes pushed by the background ───────────────────
+  // ── Load Global Database State ────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    storageManager.loadState()
+      .then((loadedState) => {
+        if (cancelled) return;
+        setState(loadedState ?? DEFAULT_EXTENSION_STATE);
+      })
+      .catch((err) => {
+        console.error('[Audio-Engine-Error] Failed to load state:', err);
+        setConnectionError('Extension context is disconnected.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Subscribe to database changes ────────────────────────────────────────
 
   useEffect(() => {
     let off = () => {};
     try {
       off = EventBus.subscribe(MessageType.STATE_CHANGED, (msg) => {
-        try {
-          setState(msg.payload.state);
-        } catch (err) {
-          console.error('[Audio-Engine-Error] STATE_CHANGED subscriber handler failed:', err);
-        }
+        setState(msg.payload.state);
       });
     } catch (err) {
       console.error('[Audio-Engine-Error] STATE_CHANGED subscriber setup failed:', err);
     }
-
     return () => {
-      try {
-        off();
-      } catch (err) {
-        console.error('[Audio-Engine-Error] STATE_CHANGED unsubscribe failed:', err);
-      }
+      off();
     };
   }, []);
 
-  // ── Publish helpers ────────────────────────────────----------------───────
-
-  const publishSettings = useCallback((settings: AudioSettings) => {
-    try {
-      console.log(`[Audio-Engine-Trace] Popup sent volume ${settings.volume}`);
-      EventBus.publish({
-        type: MessageType.SET_DEFAULT_SETTINGS,
-        payload: { settings },
-      } satisfies MessageOfType<MessageType.SET_DEFAULT_SETTINGS>).catch((err) => {
-        console.error('[Audio-Engine-Error] publishSettings async EventBus publish failed:', err);
-        setConnectionError('Extension context was invalidated or disconnected.');
-      });
-    } catch (err) {
-      console.error('[Audio-Engine-Error] publishSettings sync failed:', err);
-      setConnectionError('Extension context was invalidated or disconnected.');
-    }
-  }, []);
-
-  // Debounce high-frequency slider events (e.g. volume drag) to ~60 ms.
-  const debouncedPublish = useDebounce(publishSettings, 60);
-
-  // ── Settings change handler (from child tabs / sliders) ────────────────────
+  // ── Outbound message dispatching: User UI action listeners only ──────────
 
   const handleSettingsChange = useCallback(
     (patch: Partial<AudioSettings>) => {
       try {
-        setState((prev) => {
-          try {
-            const next: ExtensionState = {
-              ...prev,
-              defaultSettings: { ...prev.defaultSettings, ...patch },
-            };
-            debouncedPublish(next.defaultSettings);
-            return next;
-          } catch (err) {
-            console.error('[Audio-Engine-Error] handleSettingsChange state transition failed:', err);
-            return prev;
+        if (activeTabId == null) return;
+
+        setTabSettings((prev) => {
+          const next = { ...prev, ...patch };
+
+          if (patch.volume !== undefined) {
+            // One-way, targeted user slider volume change command
+            chrome.tabs.sendMessage(
+              activeTabId,
+              {
+                type: MessageType.SET_LIVE_VOLUME,
+                payload: { volume: next.volume },
+              } satisfies MessageOfType<MessageType.SET_LIVE_VOLUME>,
+              () => {
+                const err = chrome.runtime.lastError;
+                if (err) {
+                  console.debug('[Audio-Engine] SET_LIVE_VOLUME failed:', err.message);
+                }
+              }
+            );
+          } else if (
+            patch.eqBands !== undefined ||
+            patch.isEqEnabled !== undefined ||
+            patch.isMono !== undefined
+          ) {
+            // One-way, targeted user EQ/mono setting change command
+            chrome.tabs.sendMessage(
+              activeTabId,
+              {
+                type: MessageType.SET_LIVE_EQ,
+                payload: {
+                  eqBands: next.eqBands,
+                  isEqEnabled: next.isEqEnabled,
+                  isMono: next.isMono,
+                },
+              } satisfies MessageOfType<MessageType.SET_LIVE_EQ>,
+              () => {
+                const err = chrome.runtime.lastError;
+                if (err) {
+                  console.debug('[Audio-Engine] SET_LIVE_EQ failed:', err.message);
+                }
+              }
+            );
           }
+
+          return next;
         });
       } catch (err) {
         console.error('[Audio-Engine-Error] handleSettingsChange failed:', err);
       }
     },
-    [debouncedPublish],
+    [activeTabId],
   );
 
-  // ── Global enable/disable toggle ──────────────────────────────────────────
+  // ── Explicit Rule Persistence ─────────────────────────────────────────────
+
+  const handleSaveRule = useCallback(() => {
+    try {
+      if (!currentUrl || currentUrl.startsWith('chrome')) return;
+      const urlObj = new URL(currentUrl);
+      const pattern = urlObj.hostname;
+
+      console.log(`[Audio-Engine] Explicitly saving rule for pattern: ${pattern}`);
+      EventBus.publish({
+        type: MessageType.SAVE_RULE,
+        payload: {
+          pattern,
+          settings: tabSettings,
+        },
+      } satisfies MessageOfType<MessageType.SAVE_RULE>).catch((err) => {
+        console.error('[Audio-Engine-Error] SAVE_RULE publish failed:', err);
+      });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] handleSaveRule failed:', err);
+    }
+  }, [currentUrl, tabSettings]);
+
+  // ── Global Toggle ────────────────-----------------------------------------
 
   const handlePowerToggle = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       try {
         const isEnabled = e.target.checked;
-        setState((prev) => {
-          try {
-            return { ...prev, isEnabled };
-          } catch (err) {
-            console.error('[Audio-Engine-Error] handlePowerToggle state update failed:', err);
-            return prev;
-          }
-        });
+        setState((prev) => ({ ...prev, isEnabled }));
         EventBus.publish({
           type: MessageType.TOGGLE_ENABLED,
           payload: { isEnabled },
         } satisfies MessageOfType<MessageType.TOGGLE_ENABLED>).catch((err) => {
-          console.error('[Audio-Engine-Error] handlePowerToggle async publish failed:', err);
-          setConnectionError('Extension context was invalidated or disconnected.');
+          console.error('[Audio-Engine-Error] TOGGLE_ENABLED publish failed:', err);
         });
       } catch (err) {
-        console.error('[Audio-Engine-Error] handlePowerToggle callback execution failed:', err);
+        console.error('[Audio-Engine-Error] handlePowerToggle failed:', err);
       }
     },
     [],
   );
 
-  // ── Rule CRUD ────────────────---------------------------------------------
+  // ── URL Rules CRUD ────────────────────────────────────────────────────────
 
   const handleAddRule = useCallback(
     (rule: Omit<UrlRule, 'id' | 'createdAt'>) => {
@@ -233,27 +238,10 @@ export const Popup: React.FC = () => {
           type: MessageType.ADD_RULE,
           payload: { rule },
         } satisfies MessageOfType<MessageType.ADD_RULE>).catch((err) => {
-          console.error('[Audio-Engine-Error] handleAddRule async publish failed:', err);
-          setConnectionError('Extension context was invalidated or disconnected.');
-        });
-
-        // Optimistic UI update – background will confirm via STATE_CHANGED.
-        setState((prev) => {
-          try {
-            return {
-              ...prev,
-              rules: [
-                ...prev.rules,
-                { ...rule, id: crypto.randomUUID(), createdAt: Date.now() },
-              ],
-            };
-          } catch (err) {
-            console.error('[Audio-Engine-Error] handleAddRule state transition failed:', err);
-            return prev;
-          }
+          console.error('[Audio-Engine-Error] ADD_RULE failed:', err);
         });
       } catch (err) {
-        console.error('[Audio-Engine-Error] handleAddRule callback failed:', err);
+        console.error('[Audio-Engine-Error] handleAddRule execution failed:', err);
       }
     },
     [],
@@ -265,27 +253,14 @@ export const Popup: React.FC = () => {
         type: MessageType.DELETE_RULE,
         payload: { id },
       } satisfies MessageOfType<MessageType.DELETE_RULE>).catch((err) => {
-        console.error('[Audio-Engine-Error] handleDeleteRule async publish failed:', err);
-        setConnectionError('Extension context was invalidated or disconnected.');
-      });
-
-      setState((prev) => {
-        try {
-          return {
-            ...prev,
-            rules: prev.rules.filter((r) => r.id !== id),
-          };
-        } catch (err) {
-          console.error('[Audio-Engine-Error] handleDeleteRule state transition failed:', err);
-          return prev;
-        }
+        console.error('[Audio-Engine-Error] DELETE_RULE failed:', err);
       });
     } catch (err) {
-      console.error('[Audio-Engine-Error] handleDeleteRule callback failed:', err);
+      console.error('[Audio-Engine-Error] handleDeleteRule execution failed:', err);
     }
   }, []);
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ────────────────------------------------------------------------
 
   if (connectionError) {
     return (
@@ -325,9 +300,7 @@ export const Popup: React.FC = () => {
             onClick={() => {
               try {
                 window.close();
-              } catch (err) {
-                console.error('[Audio-Engine-Error] window.close failed:', err);
-              }
+              } catch {}
             }}
             style={{
               width: '100%',
@@ -358,8 +331,6 @@ export const Popup: React.FC = () => {
       </div>
     );
   }
-
-  const settings = state.defaultSettings;
 
   return (
     <div className="popup-shell">
@@ -403,7 +374,7 @@ export const Popup: React.FC = () => {
               try {
                 setActiveTab(tab.id);
               } catch (err) {
-                console.error('[Audio-Engine-Error] Tab selection click handler failed:', err);
+                console.error('[Audio-Engine-Error] Tab selection failed:', err);
               }
             }}
           >
@@ -413,29 +384,75 @@ export const Popup: React.FC = () => {
         ))}
       </nav>
 
+      {/* ── Graceful connection waiting state notice ── */}
+      {!isTabReady && state.isEnabled && activeTab !== 'rules' && (
+        <div style={{
+          textAlign: 'center',
+          padding: '16px',
+          background: 'rgba(255, 193, 7, 0.08)',
+          borderBottom: '1px solid rgba(255, 193, 7, 0.2)',
+          color: '#ffc107',
+          fontSize: '13px',
+          fontWeight: 500,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '8px'
+        }}>
+          <div>⏳ Connecting to tab audio stream...</div>
+          <div style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)', fontWeight: 400 }}>
+            Play audio/video in the active tab to activate the control panel.
+          </div>
+        </div>
+      )}
+
       {/* ── Tab panels ── */}
       <main
         id={`panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={`tab-${activeTab}`}
-        className={`tab-content${state.isEnabled ? '' : ' disabled-overlay'}`}
+        className={`tab-content${(state.isEnabled && (isTabReady || activeTab === 'rules')) ? '' : ' disabled-overlay'}`}
       >
         {activeTab === 'dashboard' && (
-          <Dashboard settings={settings} onChange={handleSettingsChange} />
+          <Dashboard settings={tabSettings} onChange={handleSettingsChange} />
         )}
         {activeTab === 'equalizer' && (
-          <Equalizer settings={settings} onChange={handleSettingsChange} />
+          <Equalizer settings={tabSettings} onChange={handleSettingsChange} />
         )}
         {activeTab === 'rules' && (
           <UrlRules
             rules={state.rules}
-            currentSettings={settings}
+            currentSettings={tabSettings}
             currentUrl={currentUrl}
             onAdd={handleAddRule}
             onDelete={handleDeleteRule}
           />
         )}
       </main>
+
+      {/* ── Save Settings explicit persistence button ── */}
+      {isTabReady && state.isEnabled && currentUrl && !currentUrl.startsWith('chrome') && (activeTab === 'dashboard' || activeTab === 'equalizer') && (
+        <div style={{ padding: '0 16px 16px 16px', display: 'flex', justifyContent: 'center' }}>
+          <button
+            onClick={handleSaveRule}
+            style={{
+              width: '100%',
+              padding: '10px 16px',
+              background: 'linear-gradient(135deg, #6c63ff, #48cfad)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(108, 99, 255, 0.3)',
+            }}
+          >
+            💾 Save Settings for this Site
+          </button>
+        </div>
+      )}
 
     </div>
   );

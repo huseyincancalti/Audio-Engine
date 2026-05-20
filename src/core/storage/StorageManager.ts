@@ -6,27 +6,23 @@ import {
   type UrlRule,
   CURRENT_STATE_VERSION,
   DEFAULT_EXTENSION_STATE,
+  DEFAULT_AUDIO_SETTINGS,
+  RulePriority,
 } from '@/types/index';
 
 // ---------------------------------------------------------------------------
-// Storage key constants – single source of truth for chrome.storage keys.
+// Storage key constants
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = 'audioEngineState' as const;
 
-// ---------------------------------------------------------------------------
-// Migration registry
-// ---------------------------------------------------------------------------
-
-interface MigrationStep {
+const MIGRATIONS: readonly {
   readonly fromVersion: number;
   migrate(state: Record<string, unknown>): Record<string, unknown>;
-}
-
-const MIGRATIONS: readonly MigrationStep[] = [];
+}[] = [];
 
 // ---------------------------------------------------------------------------
-// URL matcher helpers – each function has a single responsibility (SRP).
+// Match helpers
 // ---------------------------------------------------------------------------
 
 function matchesExact(url: string, pattern: string): boolean {
@@ -50,38 +46,11 @@ function matchesDomain(url: string, pattern: string): boolean {
   }
 }
 
-function ruleMatchesUrl(rule: UrlRule, url: string): boolean {
-  try {
-    if (matchesExact(url, rule.pattern)) return true;
-    if (matchesDomain(url, rule.pattern)) return true;
-  } catch (err) {
-    console.error('[Audio-Engine-Error] StorageManager ruleMatchesUrl failed:', err);
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
-// IStorageManager – interface segregation (ISP)
+// StorageManager class
 // ---------------------------------------------------------------------------
 
-export interface IStorageManager {
-  loadState(): Promise<ExtensionState>;
-  saveState(state: ExtensionState): Promise<void>;
-  getRules(): Promise<readonly UrlRule[]>;
-  saveRules(rules: readonly UrlRule[]): Promise<void>;
-  addRule(rule: UrlRule): Promise<void>;
-  updateRule(rule: UrlRule): Promise<void>;
-  deleteRule(id: string): Promise<void>;
-  resolveSettings(url: string): Promise<AudioSettings>;
-  checkAndMigrate(): Promise<void>;
-  clear(): Promise<void>;
-}
-
-// ---------------------------------------------------------------------------
-// StorageManager – single responsibility: chrome.storage.local I/O + rule eval
-// ---------------------------------------------------------------------------
-
-export class StorageManager implements IStorageManager {
+export class StorageManager {
   private async readRaw(): Promise<Record<string, unknown>> {
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
@@ -202,27 +171,61 @@ export class StorageManager implements IStorageManager {
     }
   }
 
+  // 4. "Save Rule" Explicit Persistence Helper
+  async saveSiteRule(pattern: string, settings: AudioSettings): Promise<void> {
+    try {
+      const rules = await this.getRules();
+      const existingIdx = rules.findIndex((r) => r.pattern === pattern);
+      if (existingIdx !== -1) {
+        const updatedRule: UrlRule = {
+          ...rules[existingIdx]!,
+          settings,
+        };
+        await this.updateRule(updatedRule);
+      } else {
+        const newRule: UrlRule = {
+          id: crypto.randomUUID(),
+          pattern,
+          settings,
+          priority: RulePriority.DOMAIN,
+          createdAt: Date.now(),
+        };
+        await this.addRule(newRule);
+      }
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager saveSiteRule failed:', err);
+    }
+  }
+
+  // 3. Fallback Hierarchy Resolution Order:
+  // Check exact URL -> Check Domain -> Fallback to Default Global Config
   async resolveSettings(url: string): Promise<AudioSettings> {
     try {
-      const [rules, state] = await Promise.all([
-        this.getRules(),
-        this.loadState(),
-      ]);
+      const rules = await this.getRules();
 
+      // Phase 1: Exact URL rule check
       for (const rule of rules) {
         try {
-          if (ruleMatchesUrl(rule, url)) {
+          if (matchesExact(url, rule.pattern)) {
             return rule.settings;
           }
-        } catch (matchErr) {
-          console.error('[Audio-Engine-Error] StorageManager rule matches url check failed:', matchErr);
-        }
+        } catch {}
       }
 
-      return state.defaultSettings;
+      // Phase 2: Domain rule check
+      for (const rule of rules) {
+        try {
+          if (matchesDomain(url, rule.pattern)) {
+            return rule.settings;
+          }
+        } catch {}
+      }
+
+      // Phase 3: Fallback to global config (100% volume, flat EQ)
+      return DEFAULT_AUDIO_SETTINGS;
     } catch (err) {
       console.error('[Audio-Engine-Error] StorageManager resolveSettings failed, falling back to default:', err);
-      return DEFAULT_EXTENSION_STATE.defaultSettings;
+      return DEFAULT_AUDIO_SETTINGS;
     }
   }
 
