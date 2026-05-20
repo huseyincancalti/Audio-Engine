@@ -1,5 +1,3 @@
-// src/content/index.ts
-
 import { AudioEngine } from '@/core/audio/AudioEngine';
 import { EventBus } from '@/core/messages/EventBus';
 import {
@@ -8,6 +6,8 @@ import {
   type MessageOfType,
   DEFAULT_AUDIO_SETTINGS,
 } from '@/types/index';
+
+console.log('[Audio-Engine] Content script loaded and listening');
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -32,16 +32,17 @@ let handshakeSent = false;
  * silently without muting the video or crashing the script.
  */
 function attachEngine(media: HTMLMediaElement): void {
-  if (engineMap.has(media)) return; // already attached
+  if (media.dataset.audioEngineHooked === 'true' || engineMap.has(media)) return;
 
   try {
+    media.dataset.audioEngineHooked = 'true';
     const engine = new AudioEngine(media);
     engine.applySettings(currentSettings);
     engineMap.set(media, engine);
-    console.debug('[Content] AudioEngine attached to', media.tagName, media.src || media.currentSrc);
+    console.log('[Audio-Engine] AudioEngine attached to', media.tagName, media.src || media.currentSrc);
   } catch (err) {
-    // DRM / cross-origin restriction – bypass gracefully.
-    console.debug('[Content] Skipping DRM-protected element:', (err as Error).message);
+    delete media.dataset.audioEngineHooked;
+    console.error('[Audio-Engine-Error] Failed to attach AudioEngine:', (err as Error).message, err);
   }
 }
 
@@ -52,8 +53,14 @@ function attachEngine(media: HTMLMediaElement): void {
 function detachEngine(media: HTMLMediaElement): void {
   const engine = engineMap.get(media);
   if (!engine) return;
-  engine.destroy();
-  engineMap.delete(media);
+  try {
+    engine.destroy();
+    engineMap.delete(media);
+    delete media.dataset.audioEngineHooked;
+    console.log('[Audio-Engine] AudioEngine detached from', media.tagName);
+  } catch (err) {
+    console.error('[Audio-Engine-Error] Failed to detach AudioEngine:', (err as Error).message, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -61,8 +68,13 @@ function detachEngine(media: HTMLMediaElement): void {
 // ---------------------------------------------------------------------------
 
 function scanAndAttach(): void {
-  const elements = document.querySelectorAll<HTMLMediaElement>('video, audio');
-  elements.forEach(attachEngine);
+  try {
+    const elements = document.querySelectorAll<HTMLMediaElement>('video, audio');
+    console.log(`[Audio-Engine] Scanning DOM — found ${elements.length} media element(s)`);
+    elements.forEach(attachEngine);
+  } catch (err) {
+    console.error('[Audio-Engine-Error] scanAndAttach failed:', (err as Error).message, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,36 +82,45 @@ function scanAndAttach(): void {
 // ---------------------------------------------------------------------------
 
 const domObserver = new MutationObserver((mutations) => {
-  for (const mutation of mutations) {
-    // Newly added nodes.
-    for (const node of mutation.addedNodes) {
-      if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      const el = node as Element;
+  try {
+    for (const mutation of mutations) {
+      // Newly added nodes.
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = node as Element;
 
-      if (el instanceof HTMLMediaElement) {
-        attachEngine(el);
+        if (el instanceof HTMLMediaElement) {
+          attachEngine(el);
+        }
+        // Media elements inside a subtree (e.g. added via innerHTML).
+        el.querySelectorAll<HTMLMediaElement>('video, audio').forEach(attachEngine);
       }
-      // Media elements inside a subtree (e.g. added via innerHTML).
-      el.querySelectorAll<HTMLMediaElement>('video, audio').forEach(attachEngine);
-    }
 
-    // Removed nodes – teardown engines to prevent leaks.
-    for (const node of mutation.removedNodes) {
-      if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      const el = node as Element;
+      // Removed nodes – teardown engines to prevent leaks.
+      for (const node of mutation.removedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = node as Element;
 
-      if (el instanceof HTMLMediaElement) {
-        detachEngine(el);
+        if (el instanceof HTMLMediaElement) {
+          detachEngine(el);
+        }
+        el.querySelectorAll<HTMLMediaElement>('video, audio').forEach(detachEngine);
       }
-      el.querySelectorAll<HTMLMediaElement>('video, audio').forEach(detachEngine);
     }
+  } catch (err) {
+    console.error('[Audio-Engine-Error] MutationObserver callback threw:', (err as Error).message, err);
   }
 });
 
-domObserver.observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-});
+try {
+  domObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  console.log('[Audio-Engine] MutationObserver active on documentElement');
+} catch (err) {
+  console.error('[Audio-Engine-Error] Failed to start MutationObserver:', (err as Error).message, err);
+}
 
 // ---------------------------------------------------------------------------
 // SPA URL change detection (History API + popstate)
@@ -108,59 +129,88 @@ domObserver.observe(document.documentElement, {
 let lastUrl = location.href;
 
 function onUrlChange(): void {
-  if (location.href === lastUrl) return;
-  lastUrl = location.href;
+  try {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+    console.log('[Audio-Engine] SPA navigation detected — new URL:', lastUrl);
 
-  // Notify the background SW so it can resolve new rules for this URL.
-  EventBus.publish({
-    type: MessageType.REQUEST_SETTINGS,
-  } satisfies MessageOfType<MessageType.REQUEST_SETTINGS>).catch(() => {/* SW may be sleeping */});
+    // Notify the background SW so it can resolve new rules for this URL.
+    EventBus.publish({
+      type: MessageType.REQUEST_SETTINGS,
+    } satisfies MessageOfType<MessageType.REQUEST_SETTINGS>).catch((err) => {
+      console.error('[Audio-Engine-Error] REQUEST_SETTINGS publish failed:', (err as Error).message, err);
+    });
+  } catch (err) {
+    console.error('[Audio-Engine-Error] onUrlChange threw:', (err as Error).message, err);
+  }
 }
 
-window.addEventListener('popstate', onUrlChange);
+try {
+  window.addEventListener('popstate', onUrlChange);
 
-// Monkey-patch History API to catch pushState / replaceState navigations.
-const _pushState = history.pushState.bind(history);
-const _replaceState = history.replaceState.bind(history);
+  // Monkey-patch History API to catch pushState / replaceState navigations.
+  const _pushState    = history.pushState.bind(history);
+  const _replaceState = history.replaceState.bind(history);
 
-history.pushState = (...args) => {
-  _pushState(...args);
-  onUrlChange();
-};
-history.replaceState = (...args) => {
-  _replaceState(...args);
-  onUrlChange();
-};
+  history.pushState = (...args) => {
+    _pushState(...args);
+    onUrlChange();
+  };
+  history.replaceState = (...args) => {
+    _replaceState(...args);
+    onUrlChange();
+  };
+} catch (err) {
+  console.error('[Audio-Engine-Error] History API patching failed:', (err as Error).message, err);
+}
 
 // ---------------------------------------------------------------------------
 // Settings application
 // ---------------------------------------------------------------------------
 
 function applyToAllEngines(settings: AudioSettings): void {
-  currentSettings = settings;
-  document.querySelectorAll<HTMLMediaElement>('video, audio').forEach((media) => {
-    engineMap.get(media)?.applySettings(settings);
-  });
+  try {
+    currentSettings = settings;
+    console.log('[Audio-Engine] Applying settings to all engines:', settings);
+    document.querySelectorAll<HTMLMediaElement>('video, audio').forEach((media) => {
+      try {
+        engineMap.get(media)?.applySettings(settings);
+      } catch (err) {
+        console.error('[Audio-Engine-Error] applySettings failed on element:', media.tagName, (err as Error).message, err);
+      }
+    });
+  } catch (err) {
+    console.error('[Audio-Engine-Error] applyToAllEngines threw:', (err as Error).message, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // EventBus – receive settings pushed by the background SW
 // ---------------------------------------------------------------------------
 
-EventBus.subscribe(MessageType.APPLY_SETTINGS, (msg) => {
-  applyToAllEngines(msg.payload.settings);
-});
+try {
+  EventBus.subscribe(MessageType.APPLY_SETTINGS, (msg) => {
+    try {
+      console.log(`[Audio-Engine-Trace] Content received settings. Volume: ${msg.payload.settings.volume}`);
+      applyToAllEngines(msg.payload.settings);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] APPLY_SETTINGS handler threw:', (err as Error).message, err);
+    }
+  });
+} catch (err) {
+  console.error('[Audio-Engine-Error] Failed to subscribe to APPLY_SETTINGS:', (err as Error).message, err);
+}
 
 // ---------------------------------------------------------------------------
 // Hotkey definitions
 // ---------------------------------------------------------------------------
 
 const enum HotkeyAction {
-  VOLUME_UP = 'VOLUME_UP',
+  VOLUME_UP   = 'VOLUME_UP',
   VOLUME_DOWN = 'VOLUME_DOWN',
-  TOGGLE_EQ = 'TOGGLE_EQ',
+  TOGGLE_EQ   = 'TOGGLE_EQ',
   TOGGLE_MONO = 'TOGGLE_MONO',
-  RESET = 'RESET',
+  RESET       = 'RESET',
 }
 
 interface HotkeyBinding {
@@ -193,49 +243,63 @@ function matchesHotkey(e: KeyboardEvent, binding: HotkeyBinding): boolean {
 }
 
 function handleHotkey(action: HotkeyAction): void {
-  let next = { ...currentSettings };
+  try {
+    let next = { ...currentSettings };
 
-  switch (action) {
-    case HotkeyAction.VOLUME_UP:
-      next = { ...next, volume: Math.min(next.volume + VOLUME_STEP, VOLUME_MAX) };
-      break;
-    case HotkeyAction.VOLUME_DOWN:
-      next = { ...next, volume: Math.max(next.volume - VOLUME_STEP, VOLUME_MIN) };
-      break;
-    case HotkeyAction.TOGGLE_EQ:
-      next = { ...next, isEqEnabled: !next.isEqEnabled };
-      break;
-    case HotkeyAction.TOGGLE_MONO:
-      next = { ...next, isMono: !next.isMono };
-      break;
-    case HotkeyAction.RESET:
-      next = { ...DEFAULT_AUDIO_SETTINGS };
-      break;
+    switch (action) {
+      case HotkeyAction.VOLUME_UP:
+        next = { ...next, volume: Math.min(next.volume + VOLUME_STEP, VOLUME_MAX) };
+        break;
+      case HotkeyAction.VOLUME_DOWN:
+        next = { ...next, volume: Math.max(next.volume - VOLUME_STEP, VOLUME_MIN) };
+        break;
+      case HotkeyAction.TOGGLE_EQ:
+        next = { ...next, isEqEnabled: !next.isEqEnabled };
+        break;
+      case HotkeyAction.TOGGLE_MONO:
+        next = { ...next, isMono: !next.isMono };
+        break;
+      case HotkeyAction.RESET:
+        next = { ...DEFAULT_AUDIO_SETTINGS };
+        break;
+    }
+
+    applyToAllEngines(next);
+    showOsd(action, next);
+
+    // Push the change back to the background so it persists.
+    EventBus.publish({
+      type: MessageType.SET_DEFAULT_SETTINGS,
+      payload: { settings: next },
+    } satisfies MessageOfType<MessageType.SET_DEFAULT_SETTINGS>).catch((err) => {
+      console.error('[Audio-Engine-Error] SET_DEFAULT_SETTINGS publish failed:', (err as Error).message, err);
+    });
+  } catch (err) {
+    console.error('[Audio-Engine-Error] handleHotkey threw for action', action, ':', (err as Error).message, err);
   }
-
-  applyToAllEngines(next);
-  showOsd(action, next);
-
-  // Push the change back to the background so it persists.
-  EventBus.publish({
-    type: MessageType.SET_DEFAULT_SETTINGS,
-    payload: { settings: next },
-  } satisfies MessageOfType<MessageType.SET_DEFAULT_SETTINGS>).catch(() => {});
 }
 
-window.addEventListener('keydown', (e: KeyboardEvent) => {
-  // Ignore keypresses focused inside inputs/textareas to avoid conflicts.
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
+try {
+  window.addEventListener('keydown', (e: KeyboardEvent) => {
+    try {
+      // Ignore keypresses focused inside inputs/textareas to avoid conflicts.
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
 
-  for (const binding of HOTKEY_BINDINGS) {
-    if (matchesHotkey(e, binding)) {
-      e.preventDefault();
-      handleHotkey(binding.action);
-      return;
+      for (const binding of HOTKEY_BINDINGS) {
+        if (matchesHotkey(e, binding)) {
+          e.preventDefault();
+          handleHotkey(binding.action);
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('[Audio-Engine-Error] keydown handler threw:', (err as Error).message, err);
     }
-  }
-});
+  });
+} catch (err) {
+  console.error('[Audio-Engine-Error] Failed to register keydown listener:', (err as Error).message, err);
+}
 
 // ---------------------------------------------------------------------------
 // OSD – Shadow DOM encapsulated feedback bar
@@ -245,137 +309,138 @@ const OSD_SHADOW_HOST_ID = '__audio-engine-osd__';
 const OSD_HIDE_DELAY_MS  = 2200;
 
 let osdHost: HTMLElement | null = null;
-let osdRoot: ShadowRoot | null = null;
+let osdRoot: ShadowRoot | null  = null;
 let osdHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Lazily create the Shadow DOM host and inject the OSD stylesheet. */
 function ensureOsd(): ShadowRoot {
   if (osdRoot) return osdRoot;
 
-  const host = document.createElement('div');
-  host.id = OSD_SHADOW_HOST_ID;
+  try {
+    const host = document.createElement('div');
+    host.id = OSD_SHADOW_HOST_ID;
 
-  // Position the host at a fixed, zero-dimension anchor at the top of the
-  // stacking context – all real layout happens inside the shadow tree.
-  Object.assign(host.style, {
-    position: 'fixed',
-    top: '0',
-    left: '0',
-    width: '0',
-    height: '0',
-    zIndex: '2147483647', // max z-index
-    pointerEvents: 'none',
-  });
+    Object.assign(host.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      width: '0',
+      height: '0',
+      zIndex: '2147483647',
+      pointerEvents: 'none',
+    });
 
-  const shadow = host.attachShadow({ mode: 'closed' });
+    const shadow = host.attachShadow({ mode: 'closed' });
 
-  // ── OSD stylesheet ──────────────────────────────────────────────────────
-  const style = document.createElement('style');
-  style.textContent = `
-    :host { all: initial; }
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { all: initial; }
 
-    #osd {
-      position: fixed;
-      top: 24px;
-      left: 50%;
-      transform: translateX(-50%) translateY(-12px);
-      min-width: 260px;
-      max-width: 420px;
-      padding: 12px 20px;
-      border-radius: 14px;
-      background: rgba(10, 10, 20, 0.82);
-      backdrop-filter: blur(18px) saturate(180%);
-      -webkit-backdrop-filter: blur(18px) saturate(180%);
-      border: 1px solid rgba(255, 255, 255, 0.10);
-      box-shadow:
-        0 8px 32px rgba(0, 0, 0, 0.45),
-        0 1px 0 rgba(255, 255, 255, 0.06) inset;
-      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      font-size: 13px;
-      color: #f0f0f5;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      opacity: 0;
-      pointer-events: none;
-      transition:
-        opacity 180ms ease,
-        transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
-      will-change: opacity, transform;
-    }
+      #osd {
+        position: fixed;
+        top: 24px;
+        left: 50%;
+        transform: translateX(-50%) translateY(-12px);
+        min-width: 260px;
+        max-width: 420px;
+        padding: 12px 20px;
+        border-radius: 14px;
+        background: rgba(10, 10, 20, 0.82);
+        backdrop-filter: blur(18px) saturate(180%);
+        -webkit-backdrop-filter: blur(18px) saturate(180%);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        box-shadow:
+          0 8px 32px rgba(0, 0, 0, 0.45),
+          0 1px 0 rgba(255, 255, 255, 0.06) inset;
+        font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+        font-size: 13px;
+        color: #f0f0f5;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity 180ms ease,
+          transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        will-change: opacity, transform;
+      }
 
-    #osd.visible {
-      opacity: 1;
-      transform: translateX(-50%) translateY(0);
-    }
+      #osd.visible {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
 
-    #osd-icon {
-      font-size: 18px;
-      flex-shrink: 0;
-      line-height: 1;
-    }
+      #osd-icon {
+        font-size: 18px;
+        flex-shrink: 0;
+        line-height: 1;
+      }
 
-    #osd-body {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex: 1;
-      min-width: 0;
-    }
+      #osd-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+      }
 
-    #osd-label {
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: rgba(255, 255, 255, 0.45);
-    }
+      #osd-label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
 
-    #osd-value {
-      font-size: 15px;
-      font-weight: 700;
-      color: #ffffff;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+      #osd-value {
+        font-size: 15px;
+        font-weight: 700;
+        color: #ffffff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
-    #osd-bar-track {
-      width: 100%;
-      height: 4px;
-      border-radius: 2px;
-      background: rgba(255, 255, 255, 0.12);
-      overflow: hidden;
-    }
+      #osd-bar-track {
+        width: 100%;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.12);
+        overflow: hidden;
+      }
 
-    #osd-bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      background: linear-gradient(90deg, #6c63ff, #48cfad);
-      transition: width 140ms ease;
-      width: 10%;
-    }
-  `;
+      #osd-bar-fill {
+        height: 100%;
+        border-radius: 2px;
+        background: linear-gradient(90deg, #6c63ff, #48cfad);
+        transition: width 140ms ease;
+        width: 10%;
+      }
+    `;
 
-  // ── OSD markup ──────────────────────────────────────────────────────────
-  const osd = document.createElement('div');
-  osd.id = 'osd';
-  osd.innerHTML = `
-    <span id="osd-icon">🔊</span>
-    <div id="osd-body">
-      <div id="osd-label">Volume</div>
-      <div id="osd-value">100%</div>
-      <div id="osd-bar-track"><div id="osd-bar-fill"></div></div>
-    </div>
-  `;
+    const osd = document.createElement('div');
+    osd.id = 'osd';
+    osd.innerHTML = `
+      <span id="osd-icon">🔊</span>
+      <div id="osd-body">
+        <div id="osd-label">Volume</div>
+        <div id="osd-value">100%</div>
+        <div id="osd-bar-track"><div id="osd-bar-fill"></div></div>
+      </div>
+    `;
 
-  shadow.appendChild(style);
-  shadow.appendChild(osd);
-  document.documentElement.appendChild(host);
+    shadow.appendChild(style);
+    shadow.appendChild(osd);
+    document.documentElement.appendChild(host);
 
-  osdHost = host;
-  osdRoot = shadow;
-  return shadow;
+    osdHost = host;
+    osdRoot = shadow;
+    return shadow;
+  } catch (err) {
+    console.error('[Audio-Engine-Error] ensureOsd DOM injection failed:', (err as Error).message, err);
+    throw err;
+  }
 }
 
 interface OsdConfig {
@@ -420,64 +485,83 @@ function buildOsdConfig(action: HotkeyAction, settings: AudioSettings): OsdConfi
 }
 
 function showOsd(action: HotkeyAction, settings: AudioSettings): void {
-  const shadow = ensureOsd();
-  const config = buildOsdConfig(action, settings);
+  try {
+    const shadow = ensureOsd();
+    const config = buildOsdConfig(action, settings);
 
-  const osd     = shadow.getElementById('osd')!;
-  const icon    = shadow.getElementById('osd-icon')!;
-  const label   = shadow.getElementById('osd-label')!;
-  const value   = shadow.getElementById('osd-value')!;
-  const barFill = shadow.getElementById('osd-bar-fill') as HTMLElement;
-  const barTrack = shadow.getElementById('osd-bar-track') as HTMLElement;
+    const osd      = shadow.getElementById('osd')!;
+    const icon     = shadow.getElementById('osd-icon')!;
+    const label    = shadow.getElementById('osd-label')!;
+    const value    = shadow.getElementById('osd-value')!;
+    const barFill  = shadow.getElementById('osd-bar-fill') as HTMLElement;
+    const barTrack = shadow.getElementById('osd-bar-track') as HTMLElement;
 
-  icon.textContent  = config.icon;
-  label.textContent = config.label;
-  value.textContent = config.value;
+    icon.textContent  = config.icon;
+    label.textContent = config.label;
+    value.textContent = config.value;
 
-  if (config.fill !== undefined) {
-    barTrack.style.display = '';
-    barFill.style.width = `${Math.round(config.fill * 100)}%`;
-  } else {
-    barTrack.style.display = 'none';
+    if (config.fill !== undefined) {
+      barTrack.style.display = '';
+      barFill.style.width = `${Math.round(config.fill * 100)}%`;
+    } else {
+      barTrack.style.display = 'none';
+    }
+
+    osd.classList.add('visible');
+
+    if (osdHideTimer !== null) clearTimeout(osdHideTimer);
+    osdHideTimer = setTimeout(() => {
+      osd.classList.remove('visible');
+      osdHideTimer = null;
+    }, OSD_HIDE_DELAY_MS);
+  } catch (err) {
+    console.error('[Audio-Engine-Error] showOsd threw:', (err as Error).message, err);
   }
-
-  osd.classList.add('visible');
-
-  if (osdHideTimer !== null) clearTimeout(osdHideTimer);
-  osdHideTimer = setTimeout(() => {
-    osd.classList.remove('visible');
-    osdHideTimer = null;
-  }, OSD_HIDE_DELAY_MS);
 }
 
 // ---------------------------------------------------------------------------
 // Page unload – tear down all engines and the OSD host
 // ---------------------------------------------------------------------------
 
-window.addEventListener('pagehide', () => {
-  domObserver.disconnect();
-  document.querySelectorAll<HTMLMediaElement>('video, audio').forEach(detachEngine);
-  osdHost?.remove();
-  EventBus.unsubscribeAll(MessageType.APPLY_SETTINGS);
-});
+try {
+  window.addEventListener('pagehide', () => {
+    try {
+      domObserver.disconnect();
+      document.querySelectorAll<HTMLMediaElement>('video, audio').forEach(detachEngine);
+      osdHost?.remove();
+      EventBus.unsubscribeAll(MessageType.APPLY_SETTINGS);
+      console.log('[Audio-Engine] pagehide: teardown complete');
+    } catch (err) {
+      console.error('[Audio-Engine-Error] pagehide teardown threw:', (err as Error).message, err);
+    }
+  });
+} catch (err) {
+  console.error('[Audio-Engine-Error] Failed to register pagehide listener:', (err as Error).message, err);
+}
 
 // ---------------------------------------------------------------------------
 // Entry point – announce readiness and scan for existing media elements
 // ---------------------------------------------------------------------------
 
 (function boot() {
-  if (handshakeSent) return;
-  handshakeSent = true;
+  try {
+    if (handshakeSent) return;
+    handshakeSent = true;
 
-  // Announce to the background SW that this content script is alive.
-  EventBus.publish({
-    type: MessageType.CONTENT_READY,
-  } satisfies MessageOfType<MessageType.CONTENT_READY>).catch(() => {});
+    // Announce to the background SW that this content script is alive.
+    EventBus.publish({
+      type: MessageType.CONTENT_READY,
+    } satisfies MessageOfType<MessageType.CONTENT_READY>).catch((err) => {
+      console.error('[Audio-Engine-Error] CONTENT_READY publish failed:', (err as Error).message, err);
+    });
 
-  // Attach to any media elements already in the DOM at injection time.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', scanAndAttach, { once: true });
-  } else {
-    scanAndAttach();
+    // Attach to any media elements already in the DOM at injection time.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scanAndAttach, { once: true });
+    } else {
+      scanAndAttach();
+    }
+  } catch (err) {
+    console.error('[Audio-Engine-Error] boot() threw:', (err as Error).message, err);
   }
 })();

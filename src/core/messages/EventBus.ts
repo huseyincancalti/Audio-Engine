@@ -2,9 +2,9 @@
 
 import type {
   MessagePayload,
-  MessageType,
   MessageOfType,
 } from '@/types/index';
+import { MessageType } from '@/types/index';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,49 +41,78 @@ chrome.runtime.onMessage.addListener(
     rawMessage: unknown,
     sender: chrome.runtime.MessageSender,
     sendResponse: (response?: unknown) => void,
-  ): boolean => {
-    if (!isMessagePayload(rawMessage)) return false;
+  ): boolean | void => {
+    if (!isMessagePayload(rawMessage)) return;
 
     const handlers = registry.get(rawMessage.type);
-    if (!handlers || handlers.length === 0) return false;
+    if (!handlers || handlers.length === 0) return;
 
-    // Execute all handlers for this message type; collect the first
-    // non-undefined return value to send back as the response.
-    let responded = false;
-    const promises: Promise<unknown>[] = [];
+    const requiresResponse = rawMessage.type === MessageType.GET_STATE;
 
-    for (const handler of handlers) {
-      try {
-        const result = handler(
-          rawMessage as MessageOfType<MessageType>,
-          sender,
-        );
-        if (result instanceof Promise) {
-          promises.push(
-            result.then((value) => {
-              if (!responded && value !== undefined) {
-                responded = true;
-                sendResponse(value);
-              }
-            }),
+    if (requiresResponse) {
+      let responded = false;
+      const promises: Promise<unknown>[] = [];
+
+      for (const handler of handlers) {
+        try {
+          const result = handler(
+            rawMessage as MessageOfType<MessageType>,
+            sender,
           );
-        } else if (!responded && result !== undefined) {
-          responded = true;
-          sendResponse(result);
+          if (result instanceof Promise) {
+            promises.push(
+              result.then((value) => {
+                if (!responded && value !== undefined) {
+                  responded = true;
+                  sendResponse(value);
+                }
+              }),
+            );
+          } else if (!responded && result !== undefined) {
+            responded = true;
+            sendResponse(result);
+          }
+        } catch (err) {
+          console.error('[EventBus] Handler error:', err);
         }
-      } catch (err) {
-        console.error('[EventBus] Handler error:', err);
       }
-    }
 
-    // If any handler returned a Promise, we must return `true` to keep the
-    // message channel open until sendResponse is called asynchronously.
-    if (promises.length > 0) {
-      Promise.allSettled(promises).catch(() => {/* already handled */ });
-      return true;
-    }
+      if (promises.length > 0) {
+        Promise.allSettled(promises)
+          .then(() => {
+            if (!responded) {
+              responded = true;
+              sendResponse(undefined);
+            }
+          })
+          .catch(() => {
+            if (!responded) {
+              responded = true;
+              sendResponse(undefined);
+            }
+          });
+        return true;
+      }
 
-    return responded;
+      if (!responded) {
+        responded = true;
+        sendResponse(undefined);
+      }
+      return;
+    } else {
+      for (const handler of handlers) {
+        try {
+          handler(
+            rawMessage as MessageOfType<MessageType>,
+            sender,
+          );
+        } catch (err) {
+          console.error('[EventBus] Handler error:', err);
+        }
+      }
+      sendResponse({ success: true });
+      return;
+    }
   },
 );
 

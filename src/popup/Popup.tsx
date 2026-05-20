@@ -41,7 +41,8 @@ async function getActiveTabUrl(): Promise<string> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return tab?.url ?? '';
-  } catch {
+  } catch (err) {
+    console.error('[Audio-Engine-Error] getActiveTabUrl failed:', err);
     return '';
   }
 }
@@ -54,8 +55,18 @@ function useDebounce<T extends unknown[]>(
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   return useCallback(
     (...args: T) => {
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => fn(...args), ms);
+      try {
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          try {
+            fn(...args);
+          } catch (err) {
+            console.error('[Audio-Engine-Error] Debounced function execution failed:', err);
+          }
+        }, ms);
+      } catch (err) {
+        console.error('[Audio-Engine-Error] useDebounce invocation failed:', err);
+      }
     },
     [fn, ms],
   );
@@ -70,29 +81,46 @@ export const Popup: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [currentUrl, setCurrentUrl] = useState('');
   const [loading, setLoading]     = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // ── Boot: load state + active tab URL ─────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([
-      EventBus.publish({
-        type: MessageType.GET_STATE,
-      } satisfies MessageOfType<MessageType.GET_STATE>) as Promise<ExtensionState>,
-      getActiveTabUrl(),
-    ])
-      .then(([loadedState, url]) => {
-        if (cancelled) return;
-        setState(loadedState ?? DEFAULT_EXTENSION_STATE);
-        setCurrentUrl(url);
-      })
-      .catch((err) => {
-        console.error('[Popup] Failed to load state:', err);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    try {
+      Promise.all([
+        EventBus.publish({
+          type: MessageType.GET_STATE,
+        } satisfies MessageOfType<MessageType.GET_STATE>) as Promise<ExtensionState>,
+        getActiveTabUrl(),
+      ])
+        .then(([loadedState, url]) => {
+          if (cancelled) return;
+          try {
+            setState(loadedState ?? DEFAULT_EXTENSION_STATE);
+            setCurrentUrl(url);
+          } catch (err) {
+            console.error('[Audio-Engine-Error] Popup state initialization failed:', err);
+          }
+        })
+        .catch((err) => {
+          console.error('[Audio-Engine-Error] Popup boot promise resolution failed:', err);
+          setConnectionError('Extension context was invalidated or disconnected.');
+        })
+        .finally(() => {
+          if (!cancelled) {
+            try {
+              setLoading(false);
+            } catch (err) {
+              console.error('[Audio-Engine-Error] Popup boot finalization failed:', err);
+            }
+          }
+        });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] Popup boot setup failed:', err);
+      setConnectionError('Extension context was invalidated or disconnected.');
+    }
 
     return () => { cancelled = true; };
   }, []);
@@ -100,36 +128,70 @@ export const Popup: React.FC = () => {
   // ── Subscribe to state changes pushed by the background ───────────────────
 
   useEffect(() => {
-    const off = EventBus.subscribe(MessageType.STATE_CHANGED, (msg) => {
-      setState(msg.payload.state);
-    });
-    return off;
+    let off = () => {};
+    try {
+      off = EventBus.subscribe(MessageType.STATE_CHANGED, (msg) => {
+        try {
+          setState(msg.payload.state);
+        } catch (err) {
+          console.error('[Audio-Engine-Error] STATE_CHANGED subscriber handler failed:', err);
+        }
+      });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] STATE_CHANGED subscriber setup failed:', err);
+    }
+
+    return () => {
+      try {
+        off();
+      } catch (err) {
+        console.error('[Audio-Engine-Error] STATE_CHANGED unsubscribe failed:', err);
+      }
+    };
   }, []);
 
-  // ── Publish helpers ───────────────────────────────────────────────────────
+  // ── Publish helpers ────────────────────────────────----------------───────
 
   const publishSettings = useCallback((settings: AudioSettings) => {
-    EventBus.publish({
-      type: MessageType.SET_DEFAULT_SETTINGS,
-      payload: { settings },
-    } satisfies MessageOfType<MessageType.SET_DEFAULT_SETTINGS>).catch(console.error);
+    try {
+      console.log(`[Audio-Engine-Trace] Popup sent volume ${settings.volume}`);
+      EventBus.publish({
+        type: MessageType.SET_DEFAULT_SETTINGS,
+        payload: { settings },
+      } satisfies MessageOfType<MessageType.SET_DEFAULT_SETTINGS>).catch((err) => {
+        console.error('[Audio-Engine-Error] publishSettings async EventBus publish failed:', err);
+        setConnectionError('Extension context was invalidated or disconnected.');
+      });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] publishSettings sync failed:', err);
+      setConnectionError('Extension context was invalidated or disconnected.');
+    }
   }, []);
 
   // Debounce high-frequency slider events (e.g. volume drag) to ~60 ms.
   const debouncedPublish = useDebounce(publishSettings, 60);
 
-  // ── Settings change handler (from child tabs) ──────────────────────────────
+  // ── Settings change handler (from child tabs / sliders) ────────────────────
 
   const handleSettingsChange = useCallback(
     (patch: Partial<AudioSettings>) => {
-      setState((prev) => {
-        const next: ExtensionState = {
-          ...prev,
-          defaultSettings: { ...prev.defaultSettings, ...patch },
-        };
-        debouncedPublish(next.defaultSettings);
-        return next;
-      });
+      try {
+        setState((prev) => {
+          try {
+            const next: ExtensionState = {
+              ...prev,
+              defaultSettings: { ...prev.defaultSettings, ...patch },
+            };
+            debouncedPublish(next.defaultSettings);
+            return next;
+          } catch (err) {
+            console.error('[Audio-Engine-Error] handleSettingsChange state transition failed:', err);
+            return prev;
+          }
+        });
+      } catch (err) {
+        console.error('[Audio-Engine-Error] handleSettingsChange failed:', err);
+      }
     },
     [debouncedPublish],
   );
@@ -138,48 +200,153 @@ export const Popup: React.FC = () => {
 
   const handlePowerToggle = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const isEnabled = e.target.checked;
-      setState((prev) => ({ ...prev, isEnabled }));
-      EventBus.publish({
-        type: MessageType.TOGGLE_ENABLED,
-        payload: { isEnabled },
-      } satisfies MessageOfType<MessageType.TOGGLE_ENABLED>).catch(console.error);
+      try {
+        const isEnabled = e.target.checked;
+        setState((prev) => {
+          try {
+            return { ...prev, isEnabled };
+          } catch (err) {
+            console.error('[Audio-Engine-Error] handlePowerToggle state update failed:', err);
+            return prev;
+          }
+        });
+        EventBus.publish({
+          type: MessageType.TOGGLE_ENABLED,
+          payload: { isEnabled },
+        } satisfies MessageOfType<MessageType.TOGGLE_ENABLED>).catch((err) => {
+          console.error('[Audio-Engine-Error] handlePowerToggle async publish failed:', err);
+          setConnectionError('Extension context was invalidated or disconnected.');
+        });
+      } catch (err) {
+        console.error('[Audio-Engine-Error] handlePowerToggle callback execution failed:', err);
+      }
     },
     [],
   );
 
-  // ── Rule CRUD ─────────────────────────────────────────────────────────────
+  // ── Rule CRUD ────────────────---------------------------------------------
 
   const handleAddRule = useCallback(
     (rule: Omit<UrlRule, 'id' | 'createdAt'>) => {
-      EventBus.publish({
-        type: MessageType.ADD_RULE,
-        payload: { rule },
-      } satisfies MessageOfType<MessageType.ADD_RULE>).catch(console.error);
-      // Optimistic UI update – background will confirm via STATE_CHANGED.
-      setState((prev) => ({
-        ...prev,
-        rules: [
-          ...prev.rules,
-          { ...rule, id: crypto.randomUUID(), createdAt: Date.now() },
-        ],
-      }));
+      try {
+        EventBus.publish({
+          type: MessageType.ADD_RULE,
+          payload: { rule },
+        } satisfies MessageOfType<MessageType.ADD_RULE>).catch((err) => {
+          console.error('[Audio-Engine-Error] handleAddRule async publish failed:', err);
+          setConnectionError('Extension context was invalidated or disconnected.');
+        });
+
+        // Optimistic UI update – background will confirm via STATE_CHANGED.
+        setState((prev) => {
+          try {
+            return {
+              ...prev,
+              rules: [
+                ...prev.rules,
+                { ...rule, id: crypto.randomUUID(), createdAt: Date.now() },
+              ],
+            };
+          } catch (err) {
+            console.error('[Audio-Engine-Error] handleAddRule state transition failed:', err);
+            return prev;
+          }
+        });
+      } catch (err) {
+        console.error('[Audio-Engine-Error] handleAddRule callback failed:', err);
+      }
     },
     [],
   );
 
   const handleDeleteRule = useCallback((id: string) => {
-    EventBus.publish({
-      type: MessageType.DELETE_RULE,
-      payload: { id },
-    } satisfies MessageOfType<MessageType.DELETE_RULE>).catch(console.error);
-    setState((prev) => ({
-      ...prev,
-      rules: prev.rules.filter((r) => r.id !== id),
-    }));
+    try {
+      EventBus.publish({
+        type: MessageType.DELETE_RULE,
+        payload: { id },
+      } satisfies MessageOfType<MessageType.DELETE_RULE>).catch((err) => {
+        console.error('[Audio-Engine-Error] handleDeleteRule async publish failed:', err);
+        setConnectionError('Extension context was invalidated or disconnected.');
+      });
+
+      setState((prev) => {
+        try {
+          return {
+            ...prev,
+            rules: prev.rules.filter((r) => r.id !== id),
+          };
+        } catch (err) {
+          console.error('[Audio-Engine-Error] handleDeleteRule state transition failed:', err);
+          return prev;
+        }
+      });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] handleDeleteRule callback failed:', err);
+    }
   }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  if (connectionError) {
+    return (
+      <div
+        className="popup-shell"
+        style={{
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 540,
+          background: 'var(--bg-panel, #0f0f15)',
+          fontFamily: "'Inter', system-ui, sans-serif",
+        }}
+      >
+        <div style={{ textAlign: 'center', padding: 24, maxWidth: 280 }}>
+          <div style={{ fontSize: 40, marginBottom: 16 }}>⚠️</div>
+          <h2
+            style={{
+              color: 'var(--text-primary, #ffffff)',
+              fontSize: 16,
+              fontWeight: 600,
+              margin: '0 0 8px 0',
+            }}
+          >
+            Connection Disconnected
+          </h2>
+          <p
+            style={{
+              color: 'var(--text-muted, rgba(255,255,255,0.5))',
+              fontSize: 13,
+              lineHeight: '1.5',
+              margin: '0 0 24px 0',
+            }}
+          >
+            {connectionError} Please refresh the page and reopen this popup.
+          </p>
+          <button
+            onClick={() => {
+              try {
+                window.close();
+              } catch (err) {
+                console.error('[Audio-Engine-Error] window.close failed:', err);
+              }
+            }}
+            style={{
+              width: '100%',
+              padding: '10px 16px',
+              background: 'var(--accent-primary, #6c63ff)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Close Popup
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -232,7 +399,13 @@ export const Popup: React.FC = () => {
             aria-selected={activeTab === tab.id}
             aria-controls={`panel-${tab.id}`}
             className={`tab-btn${activeTab === tab.id ? ' active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              try {
+                setActiveTab(tab.id);
+              } catch (err) {
+                console.error('[Audio-Engine-Error] Tab selection click handler failed:', err);
+              }
+            }}
           >
             <span className="tab-icon">{tab.icon}</span>
             {tab.label}

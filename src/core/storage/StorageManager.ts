@@ -18,59 +18,45 @@ const STORAGE_KEY = 'audioEngineState' as const;
 // Migration registry
 // ---------------------------------------------------------------------------
 
-/**
- * A migration step transforms state from `fromVersion` to `fromVersion + 1`.
- * Add a new entry here whenever the state schema changes between releases.
- */
 interface MigrationStep {
   readonly fromVersion: number;
   migrate(state: Record<string, unknown>): Record<string, unknown>;
 }
 
-const MIGRATIONS: readonly MigrationStep[] = [
-  // Example: v1 → v2 (stub – extend when schema changes are introduced)
-  // {
-  //   fromVersion: 1,
-  //   migrate(state) {
-  //     return { ...state, newField: 'defaultValue', version: 2 };
-  //   },
-  // },
-];
+const MIGRATIONS: readonly MigrationStep[] = [];
 
 // ---------------------------------------------------------------------------
 // URL matcher helpers – each function has a single responsibility (SRP).
 // ---------------------------------------------------------------------------
 
-/** Tries to match a URL string against an exact URL pattern. */
 function matchesExact(url: string, pattern: string): boolean {
   try {
     const regex = new RegExp(`^${pattern}$`);
     return regex.test(url);
-  } catch {
+  } catch (err) {
+    console.error('[Audio-Engine-Error] StorageManager matchesExact failed:', err);
     return url === pattern;
   }
 }
 
-/** Tries to match a URL string against a domain pattern (e.g. "youtube.com"). */
 function matchesDomain(url: string, pattern: string): boolean {
   try {
     const { hostname } = new URL(url);
     const normalised = pattern.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     return hostname === normalised || hostname.endsWith(`.${normalised}`);
-  } catch {
+  } catch (err) {
+    console.error('[Audio-Engine-Error] StorageManager matchesDomain failed:', err);
     return false;
   }
 }
 
-/**
- * Returns true if the rule pattern matches the given URL at any level.
- * Delegates to the appropriate specialist matcher.
- */
 function ruleMatchesUrl(rule: UrlRule, url: string): boolean {
-  // Exact match: pattern contains a path or query component.
-  if (matchesExact(url, rule.pattern)) return true;
-  // Domain-level fallback.
-  if (matchesDomain(url, rule.pattern)) return true;
+  try {
+    if (matchesExact(url, rule.pattern)) return true;
+    if (matchesDomain(url, rule.pattern)) return true;
+  } catch (err) {
+    console.error('[Audio-Engine-Error] StorageManager ruleMatchesUrl failed:', err);
+  }
   return false;
 }
 
@@ -88,6 +74,7 @@ export interface IStorageManager {
   deleteRule(id: string): Promise<void>;
   resolveSettings(url: string): Promise<AudioSettings>;
   checkAndMigrate(): Promise<void>;
+  clear(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,169 +82,190 @@ export interface IStorageManager {
 // ---------------------------------------------------------------------------
 
 export class StorageManager implements IStorageManager {
-  // ── Private helpers ────────────────────────────────────────────────────────
-
-  /** Read the raw state object from chrome.storage.local. */
   private async readRaw(): Promise<Record<string, unknown>> {
-    const result = await chrome.storage.local.get(STORAGE_KEY);
-    return (result[STORAGE_KEY] as Record<string, unknown> | undefined) ?? {};
+    try {
+      const result = await chrome.storage.local.get(STORAGE_KEY);
+      return (result[STORAGE_KEY] as Record<string, unknown> | undefined) ?? {};
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager readRaw failed:', err);
+      return {};
+    }
   }
 
-  /** Write an arbitrary state object to chrome.storage.local. */
   private async writeRaw(state: Record<string, unknown>): Promise<void> {
-    await chrome.storage.local.set({ [STORAGE_KEY]: state });
+    try {
+      await chrome.storage.local.set({ [STORAGE_KEY]: state });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager writeRaw failed:', err);
+    }
   }
 
-  /**
-   * Deserialise the raw storage object into a validated `ExtensionState`.
-   * Falls back to defaults for any missing or malformed fields.
-   */
   private deserialise(raw: Record<string, unknown>): ExtensionState {
-    if (Object.keys(raw).length === 0) return { ...DEFAULT_EXTENSION_STATE };
+    try {
+      if (!raw || Object.keys(raw).length === 0) return { ...DEFAULT_EXTENSION_STATE };
 
-    const rules = Array.isArray(raw['rules'])
-      ? (raw['rules'] as UrlRule[])
-      : [];
+      const rules = Array.isArray(raw['rules'])
+        ? (raw['rules'] as UrlRule[])
+        : [];
 
-    return {
-      version:
-        typeof raw['version'] === 'number'
-          ? raw['version']
-          : CURRENT_STATE_VERSION,
-      isEnabled:
-        typeof raw['isEnabled'] === 'boolean' ? raw['isEnabled'] : true,
-      defaultSettings:
-        (raw['defaultSettings'] as AudioSettings | undefined) ??
-        DEFAULT_EXTENSION_STATE.defaultSettings,
-      rules,
-    };
+      return {
+        version:
+          typeof raw['version'] === 'number'
+            ? raw['version']
+            : CURRENT_STATE_VERSION,
+        isEnabled:
+          typeof raw['isEnabled'] === 'boolean' ? raw['isEnabled'] : true,
+        defaultSettings:
+          (raw['defaultSettings'] as AudioSettings | undefined) ??
+          DEFAULT_EXTENSION_STATE.defaultSettings,
+        rules,
+      };
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager deserialise failed:', err);
+      return { ...DEFAULT_EXTENSION_STATE };
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
-  /** Load and deserialise the full extension state. */
   async loadState(): Promise<ExtensionState> {
-    const raw = await this.readRaw();
-    return this.deserialise(raw);
+    try {
+      const raw = await this.readRaw();
+      return this.deserialise(raw);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager loadState failed:', err);
+      return { ...DEFAULT_EXTENSION_STATE };
+    }
   }
 
-  /** Serialise and persist the full extension state. */
   async saveState(state: ExtensionState): Promise<void> {
-    await this.writeRaw(state as unknown as Record<string, unknown>);
+    try {
+      await this.writeRaw(state as unknown as Record<string, unknown>);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager saveState failed:', err);
+    }
   }
 
-  /** Retrieve the persisted URL rules array, sorted by priority descending. */
   async getRules(): Promise<readonly UrlRule[]> {
-    const state = await this.loadState();
-    return [...state.rules].sort((a, b) => b.priority - a.priority);
+    try {
+      const state = await this.loadState();
+      return [...state.rules].sort((a, b) => b.priority - a.priority);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager getRules failed:', err);
+      return [];
+    }
   }
 
-  /**
-   * Replace the entire rules array and persist.
-   * Sorting is preserved on write so reads are always in priority order.
-   */
   async saveRules(rules: readonly UrlRule[]): Promise<void> {
-    const state = await this.loadState();
-    const sorted = [...rules].sort((a, b) => b.priority - a.priority);
-    await this.saveState({ ...state, rules: sorted });
+    try {
+      const state = await this.loadState();
+      const sorted = [...rules].sort((a, b) => b.priority - a.priority);
+      await this.saveState({ ...state, rules: sorted });
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager saveRules failed:', err);
+    }
   }
 
-  /** Append a new rule. Duplicate IDs are rejected. */
   async addRule(rule: UrlRule): Promise<void> {
-    const rules = await this.getRules();
-    if (rules.some((r) => r.id === rule.id)) {
-      throw new Error(`[StorageManager] Rule with id "${rule.id}" already exists.`);
+    try {
+      const rules = await this.getRules();
+      if (rules.some((r) => r.id === rule.id)) {
+        throw new Error(`Rule with id "${rule.id}" already exists.`);
+      }
+      await this.saveRules([...rules, rule]);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager addRule failed:', err);
     }
-    await this.saveRules([...rules, rule]);
   }
 
-  /** Replace an existing rule matched by id. Throws if not found. */
   async updateRule(updated: UrlRule): Promise<void> {
-    const rules = await this.getRules();
-    const idx = rules.findIndex((r) => r.id === updated.id);
-    if (idx === -1) {
-      throw new Error(`[StorageManager] Rule with id "${updated.id}" not found.`);
+    try {
+      const rules = await this.getRules();
+      const idx = rules.findIndex((r) => r.id === updated.id);
+      if (idx === -1) {
+        throw new Error(`Rule with id "${updated.id}" not found.`);
+      }
+      const next = [...rules];
+      next[idx] = updated;
+      await this.saveRules(next);
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager updateRule failed:', err);
     }
-    const next = [...rules];
-    next[idx] = updated;
-    await this.saveRules(next);
   }
 
-  /** Remove a rule by id. No-op if the id doesn't exist. */
   async deleteRule(id: string): Promise<void> {
-    const rules = await this.getRules();
-    await this.saveRules(rules.filter((r) => r.id !== id));
+    try {
+      const rules = await this.getRules();
+      await this.saveRules(rules.filter((r) => r.id !== id));
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager deleteRule failed:', err);
+    }
   }
 
-  // ── Rule resolution ────────────────────────────────────────────────────────
-
-  /**
-   * Evaluate all persisted rules against `url` and return the `AudioSettings`
-   * of the highest-priority matching rule.
-   *
-   * Resolution order (highest wins):
-   *   1. Exact URL match  (largest `priority` value among exact matches)
-   *   2. Domain match     (largest `priority` value among domain matches)
-   *   3. Global default   (ExtensionState.defaultSettings)
-   */
   async resolveSettings(url: string): Promise<AudioSettings> {
-    const [rules, state] = await Promise.all([
-      this.getRules(), // already sorted descending by priority
-      this.loadState(),
-    ]);
+    try {
+      const [rules, state] = await Promise.all([
+        this.getRules(),
+        this.loadState(),
+      ]);
 
-    // Rules are sorted descending, so the first match is automatically the
-    // highest-priority match – no secondary sort needed.
-    for (const rule of rules) {
-      if (ruleMatchesUrl(rule, url)) {
-        return rule.settings;
+      for (const rule of rules) {
+        try {
+          if (ruleMatchesUrl(rule, url)) {
+            return rule.settings;
+          }
+        } catch (matchErr) {
+          console.error('[Audio-Engine-Error] StorageManager rule matches url check failed:', matchErr);
+        }
       }
-    }
 
-    return state.defaultSettings;
+      return state.defaultSettings;
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager resolveSettings failed, falling back to default:', err);
+      return DEFAULT_EXTENSION_STATE.defaultSettings;
+    }
   }
 
-  // ── Migration ──────────────────────────────────────────────────────────────
-
-  /**
-   * Check the persisted state version and run any pending migration steps.
-   *
-   * Design:
-   *   - Each `MigrationStep` is responsible for exactly one version increment.
-   *   - Steps execute sequentially; if one throws, migration stops and the
-   *     original data is left untouched (no partial writes).
-   *   - Extend `MIGRATIONS` to handle future schema changes.
-   */
   async checkAndMigrate(): Promise<void> {
-    let raw = await this.readRaw();
+    try {
+      let raw = await this.readRaw();
+      const storedVersion =
+        typeof raw['version'] === 'number' ? raw['version'] : 0;
 
-    const storedVersion =
-      typeof raw['version'] === 'number' ? raw['version'] : 0;
+      if (storedVersion >= CURRENT_STATE_VERSION) return;
 
-    if (storedVersion >= CURRENT_STATE_VERSION) return;
+      console.info(
+        `[StorageManager] Migrating state from v${storedVersion} → v${CURRENT_STATE_VERSION}`,
+      );
 
-    console.info(
-      `[StorageManager] Migrating state from v${storedVersion} → v${CURRENT_STATE_VERSION}`,
-    );
-
-    // Run each applicable migration step in order.
-    let working = { ...raw };
-    for (const step of MIGRATIONS) {
-      if (step.fromVersion >= storedVersion && step.fromVersion < CURRENT_STATE_VERSION) {
-        working = step.migrate(working);
+      let working = { ...raw };
+      for (const step of MIGRATIONS) {
+        try {
+          if (step.fromVersion >= storedVersion && step.fromVersion < CURRENT_STATE_VERSION) {
+            working = step.migrate(working);
+          }
+        } catch (stepErr) {
+          console.error('[Audio-Engine-Error] StorageManager migration step failed:', stepErr);
+          throw stepErr;
+        }
       }
+
+      working['version'] = CURRENT_STATE_VERSION;
+      await this.writeRaw(working);
+
+      console.info('[StorageManager] Migration complete.');
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager checkAndMigrate failed:', err);
     }
+  }
 
-    // Stamp the final version and persist atomically.
-    working['version'] = CURRENT_STATE_VERSION;
-    await this.writeRaw(working);
-
-    console.info('[StorageManager] Migration complete.');
+  async clear(): Promise<void> {
+    try {
+      await chrome.storage.local.clear();
+    } catch (err) {
+      console.error('[Audio-Engine-Error] StorageManager clear failed:', err);
+    }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Singleton export – one instance shared across the extension context.
-// ---------------------------------------------------------------------------
 
 export const storageManager = new StorageManager();

@@ -29,7 +29,7 @@
     },
 
     /* Chrome extension types */
-    "types": ["chrome"]
+    "types": ["chrome", "node"]
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }
