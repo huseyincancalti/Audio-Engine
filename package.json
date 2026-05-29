@@ -1,7 +1,7 @@
 {
   "name": "audio-engine",
   "private": true,
-  "version": "2.0.0",
+  "version": "4.0.0",
   "description": "Pattern bazlı ses yükseltici ve ekolayzır — Manifest V3 Chrome eklentisi.",
   "type": "module",
   "scripts": {

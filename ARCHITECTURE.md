@@ -1,8 +1,7 @@
-# Audio Engine — Mimari Dokümantasyonu (v3)
+# Audio Engine — Mimari Dokümantasyonu (v4)
 
-> v2'den v3'e eklenenler: iş modeli + auth katmanı + premium kancaları + DRC +
-> %1000 ses sınırı + i18n + UX iyileştirmeleri + UI sistemi.
-> Tüm yeni özellikler geriye dönük uyumludur; v2'nin çekirdek mimarisi korunur.
+> v3'ten v4'e eklenenler: 3 katmanlı ses yakalama (WebRTC desteği),
+> auto-wake (kayıtlı kural varsa otomatik uyanma), tek seferlik ayar RAM'e taşındı.
 
 ---
 
@@ -24,39 +23,34 @@ Sınırsız pattern
 Tema (dark/light)
 i18n (TR/EN)
 Tek seferlik ayar
+WebRTC ses yakalama
 ```
 
-Kural: Sana MALİYETİ OLAN şeyler premium. Grup/pattern sayısına limit yok —
-kullanıcıyı gereksiz kısıtlamak değer katmaz. Gelir AI servisinden gelecek.
-
 ### 1.2 Ödeme Altyapısı (ileride)
-
-Lemon Squeezy — merchant of record, KDV/vergi onlar halleder, Türk kartları
-desteklenir. Şu an entegrasyon yok, mimari kanca hazır.
+Lemon Squeezy. Şu an kanca hazır, entegrasyon yok.
 
 ---
 
 ## 2. Teknoloji Yığını
 
 * Arayüz: React.js + TailwindCSS
-* Fontlar: DM Sans (300/400/500/600) + DM Mono (300/400/500) — Google Fonts
+* Fontlar: DM Sans (300/400/500/600) + DM Mono (300/400/500)
 * Dil: TypeScript (strict mode)
-* Ses İşleme: Web Audio API (AudioContext, GainNode, DynamicsCompressorNode,
-  BiquadFilterNode)
-* Auth: Supabase (şu an boş kanca — entegrasyon ileride)
+* Ses İşleme: Web Audio API (AudioContext, GainNode,
+  DynamicsCompressorNode, BiquadFilterNode)
+* Auth: Supabase (şu an boş kanca)
 * Çerçeve: Chrome Extensions API (Manifest V3)
-* Bundler: Vite + özel build.js (content/background için IIFE çıktısı)
+* Bundler: Vite + özel build.js (content/background IIFE)
 
 ---
 
-## 3. State Modeli — Mimarinin Kalbi (v2'den korunur)
+## 3. State Modeli — Mimarinin Kalbi
 
 ### 3.1 Öncelik Sırası (Precedence)
 
-İlk eşleşen kazanır:
-
 ```
-1. Tek seferlik ayar     → bu sekme, RAM'de, kaydedilmez
+1. Tek seferlik ayar     → bu sekme, sadece RAM, kaydedilmez,
+                           sayfa yenilenince KAYBOLUR
 2. Exact match           → music.youtube.com
 3. Subdomain wildcard    → *.youtube.com
 4. Geniş wildcard / grup → *.com veya grubun pattern'i
@@ -73,60 +67,134 @@ En yüksek skor kazanır. Eşitlikte exact match önceliklidir.
 
 ### 3.3 Tek Doğru Kaynak Kuralı
 
-| Bileşen        | Sorumluluk                                      | Yapmayacağı şey            |
-|----------------|-------------------------------------------------|----------------------------|
-| Content script | Kuralı çözer, tek doğru değeri üretir           | —                          |
+| Bileşen        | Sorumluluk                                      | Yapmayacağı şey               |
+|----------------|-------------------------------------------------|-------------------------------|
+| Content script | Kuralı çözer, tek doğru değeri üretir           | —                             |
 | Popup          | Sadece okur/gösterir, slider değişiklik gönderir| Kendi kafasından değer TUTMAZ |
-| Background     | Kuralları storage'dan okur, SPA cache tutar     | Aktif ses değeri HESAPLAMAZ|
-| Storage        | Kalıcı kuralları + ayarları saklar              | Anlık/geçici değer SAKLAMAZ|
+| Background     | Kuralları storage'dan okur, SPA cache tutar     | Aktif ses değeri HESAPLAMAZ   |
+| Storage        | Kalıcı kuralları + ayarları saklar              | Tek seferlik ayar SAKLAMAZ    |
 
 ---
 
-## 4. Grup ve Pattern Sistemi (v3 güncellemesi)
+## 4. Auto-Wake Sistemi (v4 — kritik değişiklik)
 
-### 4.1 Grup
+### 4.1 Problem (v3)
+v3'te content script tamamen pasifti — sadece popup'tan `WAKE_UP_ENGINE`
+gelince uyanıyordu. Kullanıcı kayıtlı kural olan bir siteye gittiğinde
+popup'u açmadan geçerse ayar uygulanmıyordu.
 
-* İsim + renk seçici (8-10 preset + özel hex girişi)
-* İkon yok (şimdilik kapsam dışı)
-* Sınırsız grup
+### 4.2 Çözüm: Kayıtlı Kural Varsa Otomatik Uyan
 
-### 4.2 Pattern Girişi — URL → Pattern Dönüşümü
+```
+Content script yüklenir (sayfa açıldı)
+        ↓
+Background'a sor: CHECK_URL_RULES (mevcut URL)
+        ↓
+    EVET: kural var              HAYIR: kural yok
+         ↓                             ↓
+  Otomatik uyan               Idle (Sleeping) modunda bekle
+  AudioEngine başlat          Popup'tan WAKE_UP_ENGINE gelince uyanır
+  Kuralı uygula
+```
 
-Kullanıcı pattern syntax'ı öğrenmek zorunda değil:
+Felsefe korunuyor: "lazy activation" — ama kayıtlı kural varsa kullanıcı
+müdahalesi gerekmeksizin sessizce çalışır.
+
+### 4.3 Yeni EventBus Mesajı
+
+```
+CHECK_URL_RULES: Content → Background
+  → payload: { url: string, tabId: number }
+  → response: { hasRule: boolean, settings: AudioSettings | null }
+```
+
+### 4.4 SPA Geçişlerinde Auto-Wake
+
+YouTube gibi client-side routing yapan sitelerde URL değişince content
+script yeniden yüklenmez. Background'daki `tabSessionCache` URL değişimini
+`tabs.onUpdated` ile izler ve content script'e `URL_CHANGED` mesajı gönderir.
+Content script bu mesajda yeni URL için CHECK_URL_RULES döngüsünü tekrar çalıştırır.
+
+---
+
+## 5. 3 Katmanlı Ses Yakalama (v4 — WebRTC desteği)
+
+### 5.1 Neden Gerekli?
+Meet, Zoom, Discord gibi uygulamalar sesi WebRTC MediaStream üzerinden çalıştırır.
+`createMediaElementSource` bu sese ulaşamaz ve bypass'a düşer.
+
+### 5.2 Katman Sırası (waterfall)
+
+```
+KATMAN 1 — MediaElementSource (standart)
+  → <video>/<audio> elementi var ve erişilebilir
+  → createMediaElementSource ile yakala
+  → Başarısızsa → Katman 2
+
+KATMAN 2 — MediaStreamSource
+  → Elementin srcObject'i MediaStream ise
+  → createMediaStreamSource ile yakala
+  → Başarısızsa → Katman 3
+
+KATMAN 3 — Page Script Injection (WebRTC)
+  → Content script, sayfa bağlamına bir <script> inject eder
+  → Injected script, RTCPeerConnection.prototype'ı wrap'ler
+  → Yeni ses track'leri oluştuğunda postMessage ile bildirir
+  → Content script AudioEngine'i MediaStream ile başlatır
+  → Kullanıcıya HİÇBİR izin kutusu gösterilmez
+  → Başarısızsa → Bypass
+
+BYPASS (son çare)
+  → isBypassed = true
+  → Popup'ta açıklayıcı mesaj: "Bu site ses işlemeye izin vermiyor"
+  → Orijinal ses bozulmadan devam eder
+```
+
+### 5.3 Injection Güvenliği
+
+Injected script sadece `RTCPeerConnection` track'lerini dinler, veri okumaz.
+Sayfa kapanınca temizlenir. `world: 'MAIN'` execution context kullanılır.
+manifest.json'da `"world": "MAIN"` ile tanımlanır.
+
+### 5.4 Hook Guard (v2'den korunur, tüm katmanlar için)
+
+* `element.dataset.audioEngineHooked` — MediaElement için
+* `WeakSet<MediaStream>` — MediaStream için
+* `window.__audioEngineRTCHooked` — RTCPeerConnection için
+Her kaynak sadece BİR KEZ hook'lanır.
+
+---
+
+## 6. Grup ve Pattern Sistemi
+
+### 6.1 Grup
+* İsim + renk seçici (8-10 preset + özel hex)
+* Sınırsız grup, sınırsız pattern
+
+### 6.2 Pattern Girişi — URL → Pattern Dönüşümü
 
 ```
 Kullanıcı girer:   youtube.com
 Sistem üretir:     *.youtube.com
-Açıklama gösterir: "YouTube'un tüm sayfaları için geçerli"
+Açıklama:          "YouTube'un tüm sayfaları için geçerli"
 ```
 
-* Manuel pattern girişi de desteklenir (teknik kullanıcılar için)
-* Her pattern yanında "i" ikonu → açıklama tooltip'i
-  * örn: `*.youtube.com` → "youtube.com ve tüm alt domainleri kapsar"
-* Sınırsız pattern
+Manuel pattern girişi de desteklenir. Her pattern yanında "i" ikonu.
 
-### 4.3 Çakışma Göstergesi
-
-İki pattern aynı URL'e eşleşiyorsa kullanıcıya görünür uyarı:
-"Bu site 2 kuralla eşleşiyor — [daha spesifik olan] geçerli"
+### 6.3 Çakışma Göstergesi
+İki pattern aynı URL'e eşleşiyorsa kullanıcıya görünür uyarı gösterilir.
 
 ---
 
-## 5. Auth Katmanı — Supabase (Kanca Hazır, Entegrasyon İleride)
-
-### 5.1 Veri Modeli
-
-StorageManager'da şu alanlar bulunur (şu an boş/default):
+## 7. Auth Katmanı — Supabase Kancası
 
 ```typescript
 interface UserProfile {
-  userId: string | null        // Supabase user id — şimdilik null
-  tier: 'free' | 'premium'    // şimdilik her zaman 'free'
-  email: string | null         // şimdilik null
+  userId: string | null        // default: null
+  tier: 'free' | 'premium'    // default: 'free'
+  email: string | null
 }
 ```
-
-### 5.2 Tier Kontrolü
 
 ```typescript
 // src/core/auth/TierGate.ts
@@ -139,22 +207,14 @@ export function canUseFeature(
 }
 ```
 
-Şu an her kullanıcı 'free', her özellik açık. Supabase entegrasyonu
-geldiğinde sadece bu fonksiyon güncellenir — başka hiçbir şey değişmez.
-
-### 5.3 Premium İşaretleme
-
-Premium olacak UI elementleri şimdilik `data-premium="true"` ile işaretlenir.
-Kilitli görünür ama işlevseldir — ileride gerçek kontrol buraya gelir.
-
 ---
 
-## 6. Ses Motoru (v3 güncellemeleri)
+## 8. Ses Motoru
 
-### 6.1 Audio Node Zinciri
+### 8.1 Audio Node Zinciri
 
 ```
-MediaElementSource
+MediaElementSource / MediaStreamSource / RTCTrack
       ↓
   GainNode          ← ses seviyesi (0 — 10x / %1000)
       ↓
@@ -163,218 +223,154 @@ DynamicsCompressorNode  ← patlama koruması (DRC)
 AudioContext.destination
 ```
 
-### 6.2 Parametreler
+### 8.2 Parametreler
 
-**GainNode:**
-* MAX_GAIN = 10 (= %1000)
-* Anti-crackle: setTargetAtTime ile 15-20ms logaritmik yumuşatma
+**GainNode:** MAX_GAIN = 10 (%1000), setTargetAtTime 18ms anti-crackle
 
-**DynamicsCompressorNode (sabit, kullanıcı değiştirmez):**
-* threshold: -24 dB
-* knee: 30 dB
-* ratio: 12
-* attack: 0.003 s
-* release: 0.25 s
-
-Dashboard'da DRC toggle var (açık/kapalı). StorageManager'a `drcEnabled: boolean` eklenir.
-Power off durumunda DRC de devre dışı.
-
-### 6.3 Hook Guard (v2'den korunur)
-
-* `element.dataset.audioEngineHooked` — ikinci hook'u engeller
-* `readyState >= 1` bekle, yoksa `loadedmetadata` dinle
-* DOMException → `isBypassed = true`, pass-through
+**DRC:** threshold -24dB, knee 30dB, ratio 12, attack 0.003s, release 0.25s
+Dashboard toggle: `drcEnabled: boolean`. Power off'ta DRC de devre dışı.
 
 ---
 
-## 7. i18n Sistemi
+## 9. i18n Sistemi
 
 ```
 src/i18n/
-  index.ts     ← t(key) fonksiyonu, setLanguage(), aktif dil yönetimi
+  index.ts     ← t(key), setLanguage(), aktif dil yönetimi
   tr.json      ← Türkçe (varsayılan)
   en.json      ← İngilizce
 ```
 
-* `t('vol.label')` → "Ses" veya "Volume"
-* `setLanguage('en')` → StorageManager'a yazar, tüm UI anında güncellenir
-* Yeni dil eklemek = sadece yeni JSON dosyası
-* Dil seçici: dropdown (chip değil) — ileride dil sayısı artınca temiz kalır
-* Varsayılan: 'tr'
+Dil seçici: dropdown. "Çeviri katkısı" seçeneği:
+* GitHub PR yolu (fork → çevir → PR aç)
+* E-posta yolu (en.json → çevir → gönder)
 
 ---
 
-## 8. UX Kuralları
+## 10. UX Kuralları
 
-### 8.1 Boş Durum
+### 10.1 Auto-Wake Durumunda UI
+Auto-wake ile uyanınca popup rozeti otomatik "Active" gösterir.
+Kullanıcı popup'u açmadan da ayar uygulanmış olur.
 
-Hiç grup yoksa dashboard "İlk grubunu oluştur" ekranı gösterir.
-Hiç kural yokken popup "Ayar kaydetmek için butonları kullan" mesajı gösterir.
+### 10.2 Tek Seferlik Davranışı (v4)
+* Sadece content script RAM'inde — `storage.session`'a YAZILMAZ
+* Sayfa yenilenince kaybolur, precedence kurala döner
+* Sekme kapanınca zaten kaybolur
 
-### 8.2 Onboarding (İlk Açılış)
+### 10.3 WebRTC Katmanı UI
+Katman 3 (injection) çalışıyorsa popup'ta küçük gösterge:
+"WebRTC modu" badge'i — kullanıcıya teknik detay değil, sadece
+"gelişmiş mod aktif" mesajı.
 
-`StorageManager`'da `onboardingCompleted: boolean` alanı.
-İlk açılışta popup 3 adımlı kısa rehber gösterir:
-1. "Ses slider'ını oynат"
-2. "Bu site için kaydet'e bas"
-3. "Dashboard'dan grup oluştur"
-Sonraki açılışlarda gösterilmez.
+### 10.4 Boş Durum
+Hiç grup yoksa "İlk grubunu oluştur" ekranı. Popup'ta "Ayar kaydet" yönlendirmesi.
 
-### 8.3 Geri Alma (Undo Toast)
+### 10.5 Onboarding
+`onboardingCompleted: boolean`. İlk açılışta dashboard "Başlangıç" ekranı
+default olarak gelir. Pattern kavramı büyük kutuda, öncelik sırası küçük badge'ler.
 
-Grup veya kural silindiğinde:
-* Kalıcı silme 5 saniye ertelenir
-* "Silindi. Geri al" toast mesajı gösterilir
-* Kullanıcı "Geri al"a basarsa işlem iptal edilir
-* 5 saniye geçerse kalıcı silinir
+### 10.6 Geri Alma
+Silme: 5 saniye undo penceresi, toast mesajı.
 
-### 8.4 Aktif Kural Kaynağı (Popup)
-
-Popup'ta site pill'in yanında kaynak göstergesi:
-* "video grubundan" → grup kuralı geçerli
-* "site kuralı" → exact match geçerli
-* "tek seferlik" → geçici ayar aktif
-* "varsayılan" → hiç kural yok
+### 10.7 Çakışma
+İki kural eşleşiyorsa popup'ta ve dashboard'da uyarı.
 
 ---
 
-## 9. UI Sistemi
+## 11. İletişim Protokolü (EventBus)
 
-### 9.1 Tema
-
-Dark ve Light, `document.body.className = 'theme-dark' | 'theme-light'` ile anlık geçiş.
-StorageManager'a `theme: 'dark' | 'light'` yazılır.
-
-**Dark (Noir + Rose):**
-```css
---bg-base: #1A0A0A;
---bg-glass: rgba(26,10,10,0.82);
---bg-card: rgba(255,255,255,0.03);
---border-primary: rgba(232,114,154,0.18);
---border-secondary: rgba(255,255,255,0.06);
---text-primary: rgba(255,255,255,0.9);
---text-secondary: rgba(255,255,255,0.4);
---text-tertiary: rgba(255,255,255,0.2);
---rose: #E8729A;
---rose-dim: rgba(232,114,154,0.15);
---success: #4ade80;
---warning: #fbbf24;
---danger: rgba(239,68,68,0.7);
+```
+WAKE_UP_ENGINE      Popup → Content (manuel uyanma)
+CHECK_URL_RULES     Content → Background (auto-wake sorgusu)
+URL_CHANGED         Background → Content (SPA navigasyon)
+GET_CURRENT_STATE   Popup → Content
+STATE_RESPONSE      Content → Popup (ses, EQ, kural kaynağı, rozet, katman)
+SET_LIVE_VOLUME     Popup → Content (storage'a yazmaz)
+SET_LIVE_EQ         Popup → Content (storage'a yazmaz)
+SAVE_RULE           Popup → Background (kalıcı kural)
+SET_ONE_OFF         Popup → Content (RAM'e, storage'a değil)
+SET_POWER_STATE     Popup → Content
+RULES_UPDATED       Background → Content (re-resolve tetikler)
+SET_DRC             Popup/Options → Content
 ```
 
-**Light (Frost + Rose):**
-```css
---bg-base: #E4F0F6;
---bg-glass: rgba(228,240,246,0.78);
---bg-card: rgba(255,255,255,0.6);
---border-primary: rgba(232,114,154,0.25);
---border-secondary: rgba(26,10,10,0.08);
---text-primary: rgba(26,10,10,0.9);
---text-secondary: rgba(26,10,10,0.5);
---text-tertiary: rgba(26,10,10,0.3);
---rose: #E8729A;
---rose-dim: rgba(232,114,154,0.12);
---success: #16a34a;
---warning: #d97706;
---danger: rgba(220,38,38,0.7);
-```
-
-### 9.2 Glassmorphism Kuralları
-
-```css
-backdrop-filter: blur(24px);
-background: var(--bg-glass);
-border: 1px solid var(--border-primary);
-```
-
-Opaklık dengesi: container'lar %80-85, iç kartlar %60-70, hover %75-80.
-Her temada okunabilirlik kontrolü zorunlu (WCAG AA minimum kontrast).
-
-### 9.3 Popup Boyutu
-
-Genişlik: 360px (sabit)
-Yükseklik: max 580px, scroll yok — içerik sığmalı
-
-### 9.4 Uyarı Renkleri
-
-Sistem genelinde:
-* Hata / silme / kritik: `--danger` (kırmızı tonu)
-* Bypass / dikkat: `--warning` (amber)
-* Aktif / başarı: `--success` (yeşil)
-* Premium / kilitli: `--rose` + 🔒 ikonu
-
 ---
 
-## 10. İletişim Protokolü (EventBus Contract)
-
-* `WAKE_UP_ENGINE`: Popup → Content
-* `GET_CURRENT_STATE`: Popup → Content
-* `STATE_RESPONSE`: Content → Popup (ses, EQ, aktif kural kaynağı, rozet)
-* `SET_LIVE_VOLUME` / `SET_LIVE_EQ`: Popup → Content (storage'a yazmaz)
-* `SAVE_RULE`: Popup → Background (site/grup kuralı storage'a)
-* `SET_ONE_OFF`: Popup → Content (geçici ayar)
-* `SET_POWER_STATE`: Popup → Content
-* `RULES_UPDATED`: Background → Content (kural değişince re-resolve tetikler)
-* `SET_DRC`: Popup/Options → Content (DRC aç/kapat)
-
----
-
-## 11. Dosya Ağacı
+## 12. Dosya Ağacı
 
 ```text
 ├── public/
 │   └── manifest.json
 ├── src/
-│   ├── background/          # service worker, tabSessionCache
-│   ├── content/             # DOM, precedence çözücü, DOMException koruması
+│   ├── background/
+│   │   └── index.ts         # service worker, tabSessionCache, URL izleme
+│   ├── content/
+│   │   ├── index.ts         # auto-wake, precedence çözücü, katman waterfall
+│   │   └── injected.ts      # RTCPeerConnection wrapper (MAIN world)
 │   ├── core/
-│   │   ├── audio/           # AudioEngine.ts (GainNode+DRC+EQ, hook guard)
-│   │   ├── auth/            # TierGate.ts (şimdilik boş kanca)
-│   │   ├── messages/        # EventBus.ts
-│   │   ├── rules/           # PatternMatcher.ts, RuleResolver.ts
-│   │   └── storage/         # StorageManager.ts
-│   ├── i18n/                # index.ts, tr.json, en.json
-│   ├── popup/               # React popup (pure view, 360px)
-│   ├── options/             # React dashboard
-│   ├── components/          # Paylaşılan: Toast, Tooltip, ColorPicker,
-│   │                        #   PatternInput, EmptyState, OnboardingFlow
-│   └── types/               # TS arayüzleri, mesaj tipleri
-├── build.js
+│   │   ├── audio/
+│   │   │   └── AudioEngine.ts  # GainNode+DRC+EQ, 3 katman hook, guard
+│   │   ├── auth/
+│   │   │   └── TierGate.ts
+│   │   ├── messages/
+│   │   │   └── EventBus.ts
+│   │   ├── rules/
+│   │   │   ├── PatternMatcher.ts
+│   │   │   └── RuleResolver.ts
+│   │   └── storage/
+│   │       └── StorageManager.ts
+│   ├── i18n/
+│   │   ├── index.ts
+│   │   ├── tr.json
+│   │   └── en.json
+│   ├── popup/               # React, pure view, 360px
+│   ├── options/             # React dashboard, sol sidebar
+│   ├── components/
+│   │   ├── Toast.tsx
+│   │   ├── Tooltip.tsx
+│   │   ├── ColorPicker.tsx
+│   │   ├── PatternInput.tsx
+│   │   ├── EmptyState.tsx
+│   │   └── ContribModal.tsx
+│   └── types/
+├── build.js                 # popup/options: Vite, content/background: esbuild IIFE
+│                            # injected.ts: ayrı IIFE bundle (MAIN world)
 ├── vite.config.ts
 └── package.json
 ```
 
 ---
 
-## 12. StorageManager — Tam Veri Modeli
+## 13. StorageManager — Tam Veri Modeli
 
 ```typescript
 interface StorageSchema {
-  // Kullanıcı profili (auth kancası)
-  userId: string | null          // default: null
-  tier: 'free' | 'premium'      // default: 'free'
-  email: string | null           // default: null
+  // Auth (kanca)
+  userId: string | null
+  tier: 'free' | 'premium'
+  email: string | null
 
   // Ayarlar
-  theme: 'dark' | 'light'       // default: 'dark'
-  language: 'tr' | 'en'         // default: 'tr'
-  drcEnabled: boolean            // default: true
-  onboardingCompleted: boolean   // default: false
+  theme: 'dark' | 'light'
+  language: 'tr' | 'en'
+  drcEnabled: boolean
+  onboardingCompleted: boolean
 
   // Kurallar
-  groups: Group[]                // gruplar + pattern'ler
-  siteRules: SiteRule[]          // tekil site kuralları
-  globalDefault: AudioSettings   // hiç kural yoksa
-
-  // Geçici (session — sekme kapanınca silinir)
-  // chrome.storage.session kullanılır, buraya yazılmaz
+  groups: Group[]
+  siteRules: SiteRule[]
+  globalDefault: AudioSettings
 }
+
+// NOT: Tek seferlik ayar storage'a HİÇ yazılmaz.
+// Content script RAM'inde: Map<tabId, AudioSettings>
 
 interface Group {
   id: string
   name: string
-  color: string                  // hex renk kodu
-  patterns: string[]             // ['*.youtube.com', '*.twitch.tv']
+  color: string
+  patterns: string[]
   settings: AudioSettings
 }
 
@@ -385,7 +381,7 @@ interface SiteRule {
 }
 
 interface AudioSettings {
-  volume: number                 // 0-10 (10 = %1000)
+  volume: number        // 0-10 (10 = %1000)
   eq: EQBand[]
   drcEnabled: boolean
 }
@@ -393,25 +389,28 @@ interface AudioSettings {
 
 ---
 
-## 13. Kayıtlı Mimari Kararlar
+## 14. Kayıtlı Mimari Kararlar
 
-* MAX_GAIN = 10 (%1000) — ses sınırı
-* Power off'ta node koparılmaz, gain yumuşakça 1.0'a çekilir
-* DRC her zaman zincirde, toggle sadece bypass eder (node kaldırılmaz)
-* Tek seferlik ayar: chrome.storage.session'da Tab ID bazlı
-* Grup/pattern sınırı yok — free tier için sınır koyulmaz
-* Pattern girişi: URL → wildcard dönüşümü otomatik, manuel giriş de desteklenir
-* Çakışma sessizce çözülmez — kullanıcıya gösterilir
-* Geri alma: 5 saniye undo penceresi, kalıcı silme ertelenir
-* Onboarding: tek seferlik, 3 adım, StorageManager'da flag
+* MAX_GAIN = 10 (%1000)
+* Power off: gain yumuşakça 1.0'a, node koparılmaz
+* DRC zincirde kalır, toggle sadece bypass eder
+* Tek seferlik: sadece RAM, storage.session YOK, yenilemede silinir
+* Auto-wake: kayıtlı kural varsa popup gerekmez
+* WebRTC: page injection, kullanıcıya izin kutusu yok
+* Katman waterfall: MediaElement → MediaStream → WebRTC injection → Bypass
+* Pattern: URL → wildcard otomatik, manuel de desteklenir
+* Çakışma görünür uyarı
+* Geri alma: 5 saniye undo
+* Grup/pattern sınırı yok (free tier)
+* Onboarding: tek seferlik, "Başlangıç" default ekran
 
 ---
 
-## 14. İleride Eklenecek (Kapsam Dışı)
+## 15. İleride Eklenecek (Kapsam Dışı)
 
-* Supabase auth entegrasyonu (TierGate.ts hazır)
-* AI ses temizleme (AudioEngine.ts'e yeni node — zincir hazır)
+* Supabase auth entegrasyonu
+* AI ses temizleme
 * Bulut senkronizasyon
-* Lemon Squeezy ödeme entegrasyonu
+* Lemon Squeezy ödeme
 * Mono/stereo ayarı
-* Daha fazla dil (i18n altyapısı hazır)
+* Ek diller (i18n hazır)

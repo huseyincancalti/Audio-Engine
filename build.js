@@ -1,7 +1,8 @@
-// build.js — IIFE bundling orkestratörü (ARCHITECTURE bölüm 2 & 9)
+// build.js — IIFE bundling orkestratörü (ARCHITECTURE bölüm 2 & 12)
 //
 //  1) Vite  → popup + options (React, standart build)
-//  2) esbuild → content + background (tek dosya, IIFE; content script `import` kullanamaz)
+//  2) esbuild → content + background + injected (her biri ayrı IIFE; `import` yok)
+//     - injected: MAIN world'de çalışır (WebRTC hook, ARCHITECTURE bölüm 5)
 //  3) İkonları üret (dist/icons)
 //  4) manifest.json'u dist köküne kopyala
 //
@@ -22,11 +23,12 @@ async function main() {
   console.log("→ [1/4] Vite build (popup + options)...");
   await viteBuild({ configFile: r("vite.config.ts"), logLevel: "warn" });
 
-  console.log("→ [2/4] esbuild (content + background, IIFE)...");
+  console.log("→ [2/4] esbuild (content + background + injected, IIFE)...");
   await esbuild.build({
     entryPoints: {
       content: r("src/content/index.ts"),
       background: r("src/background/index.ts"),
+      injected: r("src/content/injected.ts"),
     },
     bundle: true,
     format: "iife",

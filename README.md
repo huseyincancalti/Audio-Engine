@@ -1,24 +1,34 @@
-# Audio Engine 🎚️
+# Audio Engine 🎚️ (v4)
 
-Pattern bazlı **ses yükseltici + ekolayzır** Chrome eklentisi (Manifest V3). Sekmedeki sesi
-kurallarla yönetir: `*.youtube.com → %150`, `*.netflix.com → %57` gibi. İstediğin sekmede
-tek seferlik geçici ayar yaparsın; kalıcı kurallar storage'da saklanır.
+Pattern bazlı **ses yükseltici + ekolayzır + DRC** Chrome eklentisi (Manifest V3). Sekmedeki
+sesi kurallarla yönetir: `*.youtube.com → %150`, `*.netflix.com → %57` gibi. Kayıtlı kural
+olan siteye gidince **popup açmadan otomatik uygulanır** (auto-wake). WebRTC tabanlı siteler
+(Meet, Discord) için 3 katmanlı ses yakalama içerir.
 
-> Mimari ve tasarım kararları için `ARCHITECTURE.md` dosyasına bakın. Bu eklenti onun
-> v2 modelini birebir uygular: **Tek Doğru Kaynak (content script) + net öncelik sırası.**
+> Mimari ve tasarım kararları için `ARCHITECTURE.md`. Bu eklenti onun v4 modelini birebir
+> uygular: **Tek Doğru Kaynak (content script) + net öncelik sırası + lazy activation.**
 
 ---
 
-## Özellikler
+## v4'te yeni neler var?
 
-- 🔊 **Ses yükseltme** — %0–%400 arası (GainNode), patlama korumalı 4x kapak.
-- 🎛️ **5 bandlı EQ** — 60 / 230 / 910 / 3.6k / 14k Hz, ±12 dB (BiquadFilterNode).
-- 🎯 **Pattern + spesifiklik** — `music.youtube.com` (exact) > `*.youtube.com` > `*.com`.
-- 👥 **Gruplar** — birden çok pattern'i tek ayarla yönet.
-- ⏱️ **Tek seferlik** — sekmeye özel geçici ayar; storage'a yazılmaz, sekme kapanınca silinir.
-- 🔌 **Güç/Bypass** — node'lar koparılmadan gain yumuşakça native'e çekilir.
-- 🛡️ **Çökme yok** — ses kilitli sitelerde (`DOMException`) otomatik pass-through.
-- 🔒 **Sekme izolasyonu** — her sekmenin durumu birbirinden bağımsız.
+- 🔊 **Ses %0–%1000** (`MAX_GAIN = 10`), patlama korumalı yumuşak gain rampası.
+- 🛡️ **DRC** — `DynamicsCompressorNode` ile dinamik aralık sıkıştırma (dashboard'dan toggle).
+- ⚡ **Auto-Wake** — kayıtlı kural varsa content script kendiliğinden uyanır; popup gerekmez.
+  SPA geçişleri (YouTube video değişimi) `tabs.onUpdated` ile izlenir.
+- 🎥 **3 Katmanlı ses yakalama** — MediaElement → MediaStream → **WebRTC injection (MAIN world)**
+  → Bypass. WebRTC sesi yakalanırken kullanıcıya **hiçbir izin kutusu** çıkmaz.
+- 🧠 **Tek seferlik ayar artık sadece RAM'de** — `storage.session` kullanılmaz, sayfa
+  yenilenince kaybolur.
+- 🌍 **i18n (TR/EN)** — varsayılan Türkçe; dashboard'dan dil değişimi + çeviri katkı akışı.
+- 🎨 **Tema** — Dark (Noir+Rose) / Light (Frost+Rose), CSS variable tabanlı.
+- 🔒 **Auth kancaları** — `TierGate` (free/premium); premium özellikler şimdilik açık.
+
+### Korunan v2/v3 davranışları
+- 🎯 Pattern + spesifiklik: `music.youtube.com` (exact) > `*.youtube.com` > `*.com`.
+- 👥 Sınırsız grup, sınırsız pattern.
+- 🔌 Güç/Bypass: node'lar koparılmadan gain yumuşakça native'e çekilir.
+- 🔒 Sekme izolasyonu; popup değer **tutmaz**, her açılışta content'ten çözülmüş değeri çeker.
 
 ---
 
@@ -28,126 +38,102 @@ Gereksinim: **Node.js 18+**.
 
 ```bash
 npm install
-npm run build
+npm run build      # dist/ üretir
+npm run typecheck  # tsc --noEmit
 ```
 
-Bu komut `dist/` klasörünü üretir:
+`npm run build` 5 bundle üretir (`build.js` orkestratörü):
+
+| # | Bundle | Araç | Çıktı |
+|---|--------|------|-------|
+| 1 | Popup (React) | Vite | `dist/assets/*` + `dist/src/popup/index.html` |
+| 2 | Options (React) | Vite | `dist/assets/*` + `dist/src/options/index.html` |
+| 3 | `content/index.ts` | esbuild IIFE | `dist/content.js` |
+| 4 | `background/index.ts` | esbuild IIFE | `dist/background.js` |
+| 5 | `content/injected.ts` | esbuild IIFE (MAIN world) | `dist/injected.js` |
 
 ```
 dist/
 ├── manifest.json
-├── background.js          # service worker (IIFE)
-├── content.js             # content script (IIFE)
-├── icons/                 # 16 / 48 / 128 px
-├── assets/                # React popup + options bundle'ları
+├── background.js      # service worker (IIFE)
+├── content.js         # content script — isolated world (IIFE)
+├── injected.js        # WebRTC hook — MAIN world (IIFE)
+├── icons/             # 16 / 48 / 128 px
+├── assets/            # React popup + options bundle'ları
 └── src/
     ├── popup/index.html
     └── options/index.html
 ```
 
 ### Chrome'a yükleme
-
-1. `chrome://extensions` aç.
-2. Sağ üstten **Developer mode**'u aç.
-3. **Load unpacked** → projedeki **`dist/`** klasörünü seç.
-4. Araç çubuğunda Audio Engine ikonu çıkar. (Kuralları yönetmek için sağ tık → **Options**.)
-
-> Kod değiştirdiğinde `npm run build` çalıştırıp `chrome://extensions`'tan eklentiyi **Reload** et.
-
----
-
-## Kullanım
-
-### Popup (hızlı kontrol)
-Aktif sekme için ses slider'ı, EQ band'ları, durum rozeti (**Active / Sleeping / Bypassed**)
-ve üç buton:
-
-| Buton | Ne yapar |
-|---|---|
-| **Bu site için kaydet** | O an açık host'u (`hostname`) kalıcı site kuralı olarak yazar. |
-| **Bu grup için kaydet** | Seçili gruba mevcut host'u ekler + grubun ayarını günceller. |
-| **Tek seferlik** | Yalnızca bu sekme için geçici uygular (storage'a yazmaz). |
-
-Popup **değer tutmaz**: her açılışta content script'ten çözülmüş güncel değeri çeker (desync yok).
-
-### Options (yönetim paneli)
-- Global varsayılanı düzenle.
-- Grup oluştur/yeniden adlandır/sil, gruba pattern ekle/çıkar.
-- Site kuralı ekle/sil, ayarlarını düzenle.
-- **Tüm Kurallar** tablosu: spesifiklik skoruna göre sıralı tam görünüm.
-
----
-
-## Öncelik Sırası (precedence)
-
-Bir sekmede ayar çözülürken yukarıdan aşağı kontrol edilir, **ilk eşleşen kazanır**:
-
-```
-1. Tek seferlik / canlı override   (RAM, kaydedilmez)
-2. Exact match                     (music.youtube.com)
-3. Subdomain wildcard              (*.youtube.com)
-4. Geniş wildcard / grup           (*.com)
-5. Global varsayılan
-```
-
-2–4 arası tek bir **spesifiklik yarışmasıyla** çözülür:
-
-```
-score = (literal karakter sayısı) − (wildcard sayısı × 10)
-```
-
-En yüksek skor kazanır; eşitlikte exact match, sonra site kuralı önceliklidir.
-
----
-
-## Manuel test senaryoları
-
-1. **YouTube %150 + kaydet** — YouTube'da slider'ı %150 yap, “Bu site için kaydet”. Sayfayı
-   yenile → otomatik %150 uygulanır.
-2. **Netflix grubu %57** — Options'tan “Video” grubu yerine ayrı bir grup oluştur, `*.netflix.com`
-   ekle, %57 ver. Netflix'te ses iner.
-3. **Tek seferlik %80** — Bir sekmede %80 “Tek seferlik”. Sayfayı yenile → %80 kalır. Sekmeyi
-   kapatıp aynı siteyi tekrar aç → grup/kural ayarına döner.
-4. **İzolasyon** — İki sekme aç; birinde %200, diğerinde %100. Biri diğerini etkilemez.
-5. **Desync yok** — Popup'ı kapatıp tekrar aç → her zaman güncel değer görünür.
-6. **Kilitli site** — Google Meet'te eklenti çökmez; rozet **Bypassed**, ses bozulmaz.
+1. `chrome://extensions` aç → sağ üstten **Developer mode**.
+2. **Load unpacked** → projedeki **`dist/`** klasörünü seç.
+3. Kod değiştirince `npm run build` + eklentiyi **Reload**.
 
 ---
 
 ## Mimari özet
 
 ```
-Popup (pure view) ──GET_CURRENT_STATE / SET_*──► Content (TEK doğru kaynak)
-        │                                              │ precedence çözer, AudioEngine'i sürer
-        └──SAVE_RULE──► Background ──storage──► (kalıcı kurallar)
-                          │  tabSessionCache (storage.session): tek seferlik ayar reload'a dayanır,
-                          │  sekme kapanınca silinir.
+injected.js (MAIN world)  ──postMessage──►  content.js (isolated, TEK doğru kaynak)
+  RTCPeerConnection hook                       │ precedence çözer, AudioEngine'i sürer
+                                               │
+Popup (pure view) ──GET_CURRENT_STATE/SET_*──► content.js
+        │                                        ▲
+        └──SAVE_RULE──► background ──storage──► (kalıcı kurallar)
+                          │  CHECK_URL_RULES'a cevap verir (auto-wake oracle)
+                          │  tabs.onUpdated → URL_CHANGED (SPA navigasyon)
+                          │  storage.onChanged → RULES_UPDATED / SET_DRC yayını
 ```
 
-- **Content** kuralı çözer, AudioEngine'i sürer (Web Audio API).
-- **Popup** sadece okur + slider değişikliklerini push eder.
-- **Background** kuralları taşır ve sekme oturumunu cache'ler; ses değeri **hesaplamaz**.
-- **Storage** yalnızca kalıcı kuralları tutar.
+### Ses zinciri
+```
+kaynak (element / stream / RTC track)
+  → BiquadFilter ×5 (EQ: 60/250/1k/4k/12k Hz, ±12dB)
+  → GainNode (0–10x / %1000)
+  → DynamicsCompressorNode (DRC: -24dB / 30 / 12 / 3ms / 250ms)
+  → destination
+```
 
-### Teknoloji
-TypeScript (strict) · React + TailwindCSS · Web Audio API · Vite (popup/options) +
-esbuild (content/background IIFE) · özel `build.js` orkestratörü.
+### Öncelik sırası (precedence)
+```
+1. Tek seferlik    (RAM, kaydedilmez, yenilemede kaybolur)
+2. Exact match     (music.youtube.com)
+3. Subdomain *.    (*.youtube.com)
+4. Geniş wildcard  (*.com / grup pattern'i)
+5. Global varsayılan
+```
+2–4 arası: `score = (literal karakter) − (wildcard × 10)`; yüksek skor kazanır, eşitlikte
+exact > site > grup.
 
 ---
 
-## Komutlar
-
-| Komut | Açıklama |
-|---|---|
-| `npm run build` | `dist/` üretir (Vite + esbuild + ikon + manifest). |
-| `npm run typecheck` | `tsc --noEmit` ile tip kontrolü. |
+## Manuel test senaryoları
+1. **Auto-wake** — YouTube'da %150 + "Site Kaydet". Yeni sekmede YouTube aç → popup
+   açmadan %150 uygulanmış olmalı.
+2. **Tek seferlik** — Bir sekmede %80 "Tek Seferlik". Sayfayı yenile → ayar gitmeli, kural
+   ayarına dönmeli.
+3. **SPA** — YouTube'da video değiştir → ayar sıfırlanmamalı.
+4. **WebRTC** — Google Meet'te ses değişikliği dene → çökme olmamalı; en azından konsolda
+   `[injected] ... WebRTC hook` logu görünmeli (kural varsa boost devreye girer).
+5. **İzolasyon** — İki sekme; biri %200, diğeri %100 → birbirini etkilemez.
+6. **Tema** — Dark + Light her elemanda doğru görünmeli.
 
 ---
 
 ## Bilinen sınırlar
-
-- `all_frames: false` — yalnızca üst çerçevedeki media kontrol edilir (YouTube/Netflix/Twitch
-  ana sayfaları kapsanır; üçüncü taraf gömülü iframe player'ları kapsam dışıdır).
+- `all_frames: false` — yalnızca üst çerçevedeki media kontrol edilir.
 - CORS başlığı olmayan çapraz-kaynak media Web Audio'dan geçerken Chrome tarafından
   susturulabilir; bu durumda gücü kapatıp (Bypass) sekmeyi yenileyin.
-- İleride: mono/stereo ve AI ses temizleme (mimari hazır, kapsam dışı).
+- WebRTC (Katman 3): uzak sesi yakalamak için orijinal `<audio>` öğesi `muted` yapılıp boost'lu
+  ses paralel zincirden verilir. Eklenti çalışırken devre dışı bırakılırsa ses, sayfa
+  yenilenene kadar susabilir.
+- Çeviri katkısı: `src/i18n/en.json` → çevir → PR aç **veya** huseyincancalti@gmail.com.
+
+---
+
+## Komutlar
+| Komut | Açıklama |
+|---|---|
+| `npm run build` | `dist/` üretir (Vite + esbuild ×3 + ikon + manifest). |
+| `npm run typecheck` | `tsc --noEmit` ile tip kontrolü. |

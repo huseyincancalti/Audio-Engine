@@ -1,0 +1,240 @@
+/* src/styles/components.css — paylaşılan bileşen stilleri (Toast, Tooltip,
+ * ColorPicker, PatternInput, EmptyState, ContribModal). theme.css'ten sonra import edilir. */
+
+/* --- Toast (5sn undo) --- */
+.ae-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+  animation: toast-in 0.18s ease;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+.ae-toast-undo {
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+/* --- Tooltip --- */
+.ae-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  outline: none;
+}
+.ae-tip-i {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: 9px;
+  font-style: italic;
+  color: var(--text-dim);
+  cursor: help;
+}
+.ae-tip-bubble {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+  z-index: 50;
+}
+.ae-tip:hover .ae-tip-bubble,
+.ae-tip:focus .ae-tip-bubble {
+  opacity: 1;
+}
+
+/* --- ColorPicker --- */
+.cp {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cp-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cp-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.cp-dot:hover {
+  transform: scale(1.12);
+}
+.cp-dot[data-active='true'] {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--bg) inset;
+}
+.cp-hex {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cp-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.cp-hex .ae-input {
+  width: 120px;
+}
+
+/* --- PatternInput --- */
+.pi {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pi-row {
+  display: flex;
+  gap: 8px;
+}
+.pi-row .ae-input {
+  flex: 1;
+}
+.pi-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+}
+.pi-arrow {
+  color: var(--primary);
+  font-weight: 700;
+}
+.pi-pattern {
+  color: var(--primary);
+  font-size: 12px;
+}
+.pi-desc {
+  color: var(--text-faint);
+}
+
+/* --- EmptyState --- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 36px 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.empty-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  max-width: 320px;
+}
+
+/* --- Modal --- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+.modal {
+  width: 440px;
+  max-width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.modal-x {
+  padding: 4px 8px;
+}
+.modal-intro {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 0 0 16px;
+}
+.contrib-path {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.contrib-path h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--primary);
+}
+.contrib-path ol {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+}
