@@ -4,6 +4,7 @@
   "version": "4.0.0",
   "description": "Pattern bazlı ses yükseltici ve ekolayzır. Sekme sesini kurallarla yönet (%1000, EQ, DRC, WebRTC).",
   "permissions": ["storage", "tabs", "activeTab"],
+  "optional_permissions": ["tabCapture"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"

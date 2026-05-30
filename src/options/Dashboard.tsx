@@ -11,7 +11,7 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { Toast, type ToastData } from '../components/Toast';
 import { ContribModal } from '../components/ContribModal';
 import { GitHubIcon } from '../components/GitHubIcon';
-import type { Group, ThemeName, Language } from '../types/index';
+import type { Group, ThemeName, Language, AdvancedCapture } from '../types/index';
 
 type Screen = 'start' | 'groups' | 'allRules' | 'settings';
 
@@ -67,6 +67,8 @@ export function Dashboard() {
   const setLang = (l: Language) => void update({ language: l });
   const onSetTheme = (th: ThemeName) => void update({ theme: th });
   const onToggleDrc = (v: boolean) => void update({ drcEnabled: v });
+  const onSetAdvancedCapture = (v: AdvancedCapture) => void update({ advancedCapture: v });
+  const onSetConfirmDelete = (v: boolean) => void update({ confirmDelete: v });
 
   // --- Grup CRUD ---
   const onCreateGroup = (name: string, color: string) => {
@@ -79,6 +81,18 @@ export function Dashboard() {
     void StorageManager.addPatternToGroup(groupId, pattern);
   const onRemovePattern = (groupId: string, pattern: string) =>
     void StorageManager.removePatternFromGroup(groupId, pattern);
+
+  const onDeleteSiteRule = (id: string) => {
+    const prev = data.siteRules;
+    const rule = prev.find((r) => r.id === id);
+    void StorageManager.deleteSiteRule(id);
+    setToast({
+      message: t('toast.ruleDeleted'),
+      actionLabel: t('toast.undo'),
+      onAction: () => void update({ siteRules: prev }),
+    });
+    void rule;
+  };
 
   const onDeleteGroup = (group: Group) => {
     const prev = data.groups;
@@ -107,16 +121,29 @@ export function Dashboard() {
             onUpdateGroup={onUpdateGroup}
             onAddPattern={onAddPattern}
             onRemovePattern={onRemovePattern}
+            onSetConfirmDelete={onSetConfirmDelete}
+            onPatternAdded={(pattern) =>
+              setToast({ message: t('toast.patternAdded', { pattern }), variant: 'success' })
+            }
           />
         );
       case 'allRules':
-        return <AllRulesScreen data={data} />;
+        return (
+          <AllRulesScreen
+            data={data}
+            onDeleteSiteRule={onDeleteSiteRule}
+            onRemovePattern={onRemovePattern}
+            onSetConfirmDelete={onSetConfirmDelete}
+          />
+        );
       case 'settings':
         return (
           <SettingsScreen
             data={data}
             onToggleDrc={onToggleDrc}
             onSetTheme={onSetTheme}
+            onSetAdvancedCapture={onSetAdvancedCapture}
+            onSetConfirmDelete={onSetConfirmDelete}
             lang={lang}
             setLang={setLang}
           />

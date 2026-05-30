@@ -5,6 +5,7 @@
   "badge.sleeping": "Uyuyor",
   "badge.bypassed": "Atlandı",
   "badge.webrtc": "WebRTC modu",
+  "badge.tab_capture": "Sekme Sesi",
 
   "popup.wake": "Motoru uyandır",
   "popup.volume": "Ses",
@@ -13,13 +14,21 @@
   "popup.webrtcMessage": "Gelişmiş mod aktif",
   "popup.sleepingHint": "Bu site için kayıtlı kural yok. Ayarlamak için motoru uyandır.",
 
+  "popup.drc": "Dinamik Sıkıştırma",
+  "popup.monoMode": "Mono Mod",
+  "popup.refresh": "Yenile",
+  "popup.tabCaptureError": "Gelişmiş yakalama izni alınamadı",
+  "popup.permRequired": "Bu sitenin sesi için izin gerekiyor.",
+  "popup.permGrant": "İzin Ver",
+  "popup.permIgnore": "Yoksay",
+  "popup.unsaved": "Kaydedilmemiş değişiklik",
   "popup.btn.saveSite": "Site Kaydet",
   "popup.btn.saveGroup": "Grup Kaydet",
-  "popup.btn.oneOff": "Tek Seferlik",
-  "popup.btn.oneOffActive": "Tek Seferlik · aktif",
   "popup.ai.title": "AI ses temizleme",
   "popup.ai.badge": "yakında · premium",
   "popup.openDashboard": "Yönetim panelini aç",
+  "popup.bypassAdvHint": "Gelişmiş ses yakalama ile çalışabilir.",
+  "popup.bypassAdvLink": "Ayarları Aç",
 
   "source.one-off": "Tek seferlik",
   "source.site": "Site kuralı",
@@ -82,6 +91,8 @@
   "settings.title": "Ayarlar",
   "settings.drc.title": "Dinamik aralık sıkıştırma (DRC)",
   "settings.drc.desc": "Ani ses patlamalarını yumuşatır. Yüksek ses seviyelerinde önerilir.",
+  "settings.confirmDelete.title": "Silme onayı iste",
+  "settings.confirmDelete.desc": "Silmeden önce onay penceresi göster.",
   "settings.theme.title": "Tema",
   "settings.theme.desc": "Koyu veya açık görünüm.",
   "settings.theme.dark": "Koyu",
@@ -90,6 +101,12 @@
   "settings.ai.title": "AI ses temizleme",
   "settings.ai.desc": "Yapay zekâ ile gürültü azaltma. Premium ile gelecek.",
   "settings.ai.badge": "yakında · premium",
+  "settings.advancedCapture.title": "Gelişmiş Ses Yakalama",
+  "settings.advancedCapture.desc": "Tüm sekme sesini doğrudan işler.",
+  "settings.advancedCapture.privacy": "Sesiniz saklanmaz, yalnızca bu eklenti tarafından anlık olarak işlenir.",
+  "settings.advancedCapture.off": "Kapalı (varsayılan)",
+  "settings.advancedCapture.global": "Tüm sekmeler için",
+  "settings.advancedCapture.tab": "Sadece mevcut sekme için",
 
   "allRules.title": "Tüm Kurallar",
   "allRules.empty.title": "Henüz kural yok",
@@ -119,11 +136,21 @@
   "toast.deleted": "{name} silindi",
   "toast.undo": "Geri al",
   "toast.saved": "Kaydedildi",
+  "toast.patternAdded": "✓ {pattern} eklendi",
+  "toast.groupCreated": "\"{name}\" grubu oluşturuldu",
+  "toast.ruleDeleted": "Kural silindi",
 
   "common.save": "Kaydet",
   "common.cancel": "İptal",
   "common.delete": "Sil",
   "common.edit": "Düzenle",
   "common.done": "Tamam",
-  "common.close": "Kapat"
+  "common.close": "Kapat",
+
+  "confirm.delete.title": "Emin misin?",
+  "confirm.delete.body": "\"{label}\" silinecek. Bu işlem geri alınabilir.",
+  "confirm.delete.neverAsk": "Bir daha sorma",
+
+  "groupSelect.title": "{pattern} nereye eklensin?",
+  "groupSelect.newGroup": "Yeni grup oluştur"
 }

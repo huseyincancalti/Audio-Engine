@@ -21,6 +21,8 @@ interface Props {
   onUpdateGroup: (id: string, patch: Partial<Omit<Group, 'id'>>) => void;
   onAddPattern: (groupId: string, pattern: string) => void;
   onRemovePattern: (groupId: string, pattern: string) => void;
+  onPatternAdded?: (pattern: string) => void;
+  onSetConfirmDelete?: (v: boolean) => void;
 }
 
 export function GroupsScreen(props: Props) {
@@ -30,6 +32,11 @@ export function GroupsScreen(props: Props) {
   const [color, setColor] = useState<string>(DEFAULT_GROUP_COLOR);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
+  const [glowingGroupId, setGlowingGroupId] = useState<string | null>(null);
+
+  // Onay modalı (grup silme)
+  const [pendingDelete, setPendingDelete] = useState<{ group: Group } | null>(null);
+  const [neverAsk, setNeverAsk] = useState(false);
 
   useEffect(() => {
     if (openFormSignal > 0) setShowForm(true);
@@ -61,13 +68,37 @@ export function GroupsScreen(props: Props) {
     setEditingId(null);
   };
 
+  const requestDeleteGroup = (g: Group) => {
+    if (!data.confirmDelete) {
+      props.onDeleteGroup(g);
+      return;
+    }
+    setPendingDelete({ group: g });
+    setNeverAsk(false);
+  };
+
+  const confirmGroupDelete = () => {
+    if (!pendingDelete) return;
+    if (neverAsk) props.onSetConfirmDelete?.(false);
+    props.onDeleteGroup(pendingDelete.group);
+    setPendingDelete(null);
+  };
+
+  const handlePatternAdded = (groupId: string, pattern: string) => {
+    props.onAddPattern(groupId, pattern);
+    props.onPatternAdded?.(pattern);
+    setGlowingGroupId(groupId);
+    setTimeout(() => setGlowingGroupId(null), 700);
+  };
+
   function renderCard(g: Group) {
     const editing = editingId === g.id;
     const hasConflict = g.patterns.some((p) => patternConflicts(p, ruleData, p));
     const volPct = Math.round(g.settings.volume * 100);
+    const isGlowing = glowingGroupId === g.id;
 
     return (
-      <div className="ae-card group-card" key={g.id}>
+      <div className={`ae-card group-card${isGlowing ? ' card--added-glow' : ''}`} key={g.id}>
         <span className="color-bar" style={{ background: g.color }} />
         <div className="gc-head">
           <span className="dot" style={{ background: g.color }} />
@@ -77,7 +108,7 @@ export function GroupsScreen(props: Props) {
             <button className="btn g-btn" onClick={() => (editing ? commitEdit(g) : startEdit(g))}>
               {editing ? t('common.done') : t('groups.edit')}
             </button>
-            <button className="btn g-btn" onClick={() => props.onDeleteGroup(g)}>
+            <button className="btn g-btn" onClick={() => requestDeleteGroup(g)}>
               {t('groups.delete')}
             </button>
           </div>
@@ -137,10 +168,21 @@ export function GroupsScreen(props: Props) {
           </>
         )}
 
-        <PatternInput onAdd={(p) => props.onAddPattern(g.id, p)} />
+        <PatternInput onAdd={(p) => handlePatternAdded(g.id, p)} />
       </div>
     );
   }
+
+  const handleGlobalAdd = (pattern: string, groupId: string) => {
+    props.onAddPattern(groupId, pattern);
+    props.onPatternAdded?.(pattern);
+    setGlowingGroupId(groupId);
+    setTimeout(() => setGlowingGroupId(null), 700);
+  };
+
+  const handleGlobalCreateGroup = (gName: string, gColor: string) => {
+    props.onCreateGroup(gName, isValidHex(gColor) ? gColor : DEFAULT_GROUP_COLOR);
+  };
 
   return (
     <div>
@@ -148,6 +190,18 @@ export function GroupsScreen(props: Props) {
         <h1 className="screen-title">{t('groups.title')}</h1>
         <LanguageDropdown lang={lang} setLang={setLang} onContribute={onContribute} />
       </div>
+
+      {/* Global pattern input — grup seçim modalı ile */}
+      {(groups.length > 0) && (
+        <div style={{ marginBottom: 18 }}>
+          <PatternInput
+            groups={groups}
+            onAddToGroup={handleGlobalAdd}
+            onCreateGroup={handleGlobalCreateGroup}
+            onAddSuccess={(p) => props.onPatternAdded?.(p)}
+          />
+        </div>
+      )}
 
       {groups.length === 0 && !showForm && (
         <EmptyState
@@ -199,6 +253,35 @@ export function GroupsScreen(props: Props) {
             </button>
           </div>
         )
+      )}
+
+      {pendingDelete && (
+        <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t('confirm.delete.title')}</h3>
+            </div>
+            <p className="modal-intro">
+              {t('confirm.delete.body', { label: pendingDelete.group.name })}
+            </p>
+            <label className="confirm-never">
+              <input
+                type="checkbox"
+                checked={neverAsk}
+                onChange={(e) => setNeverAsk(e.target.checked)}
+              />
+              {t('confirm.delete.neverAsk')}
+            </label>
+            <div className="modal-foot" style={{ gap: 8, display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setPendingDelete(null)}>
+                {t('common.cancel')}
+              </button>
+              <button className="btn btn-danger" onClick={confirmGroupDelete}>
+                {t('common.delete')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

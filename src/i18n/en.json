@@ -5,6 +5,7 @@
   "badge.sleeping": "Sleeping",
   "badge.bypassed": "Bypassed",
   "badge.webrtc": "WebRTC mode",
+  "badge.tab_capture": "Tab Capture",
 
   "popup.wake": "Wake the engine",
   "popup.volume": "Volume",
@@ -13,13 +14,21 @@
   "popup.webrtcMessage": "Advanced mode active",
   "popup.sleepingHint": "No saved rule for this site. Wake the engine to adjust.",
 
+  "popup.drc": "Dynamic Compression",
+  "popup.monoMode": "Mono Mode",
+  "popup.refresh": "Refresh",
+  "popup.tabCaptureError": "Could not get advanced capture permission",
+  "popup.permRequired": "This site's audio needs permission.",
+  "popup.permGrant": "Grant",
+  "popup.permIgnore": "Ignore",
+  "popup.unsaved": "Unsaved change",
   "popup.btn.saveSite": "Save Site",
   "popup.btn.saveGroup": "Save Group",
-  "popup.btn.oneOff": "One-off",
-  "popup.btn.oneOffActive": "One-off · active",
   "popup.ai.title": "AI noise removal",
   "popup.ai.badge": "coming soon · premium",
   "popup.openDashboard": "Open dashboard",
+  "popup.bypassAdvHint": "Advanced audio capture may work here.",
+  "popup.bypassAdvLink": "Open Settings",
 
   "source.one-off": "One-off",
   "source.site": "Site rule",
@@ -82,6 +91,8 @@
   "settings.title": "Settings",
   "settings.drc.title": "Dynamic range compression (DRC)",
   "settings.drc.desc": "Smooths out sudden audio spikes. Recommended at high volumes.",
+  "settings.confirmDelete.title": "Confirm before deleting",
+  "settings.confirmDelete.desc": "Show a confirmation dialog before any delete action.",
   "settings.theme.title": "Theme",
   "settings.theme.desc": "Dark or light appearance.",
   "settings.theme.dark": "Dark",
@@ -90,6 +101,12 @@
   "settings.ai.title": "AI noise removal",
   "settings.ai.desc": "AI-powered noise reduction. Coming with Premium.",
   "settings.ai.badge": "coming soon · premium",
+  "settings.advancedCapture.title": "Advanced Audio Capture",
+  "settings.advancedCapture.desc": "Processes the entire tab's audio directly.",
+  "settings.advancedCapture.privacy": "Your audio is never stored — it is processed only locally by this extension.",
+  "settings.advancedCapture.off": "Off (default)",
+  "settings.advancedCapture.global": "For all tabs",
+  "settings.advancedCapture.tab": "Current tab only",
 
   "allRules.title": "All Rules",
   "allRules.empty.title": "No rules yet",
@@ -119,11 +136,21 @@
   "toast.deleted": "{name} deleted",
   "toast.undo": "Undo",
   "toast.saved": "Saved",
+  "toast.patternAdded": "✓ {pattern} added",
+  "toast.groupCreated": "\"{name}\" group created",
+  "toast.ruleDeleted": "Rule deleted",
 
   "common.save": "Save",
   "common.cancel": "Cancel",
   "common.delete": "Delete",
   "common.edit": "Edit",
   "common.done": "Done",
-  "common.close": "Close"
+  "common.close": "Close",
+
+  "confirm.delete.title": "Are you sure?",
+  "confirm.delete.body": "\"{label}\" will be deleted. You can undo this.",
+  "confirm.delete.neverAsk": "Don't ask again",
+
+  "groupSelect.title": "Where should {pattern} be added?",
+  "groupSelect.newGroup": "Create new group"
 }

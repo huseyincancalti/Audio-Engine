@@ -8,6 +8,7 @@ import { EventBus } from '../core/messages/EventBus';
 import {
   MessageType,
   RTC_TRACK_EVENT,
+  RTC_RESET_EVENT,
   RTC_CONTROL_EVENT,
   DEFAULT_AUDIO_SETTINGS,
   type AudioSettings,
@@ -16,6 +17,7 @@ import {
   type CaptureLayer,
   type Badge,
   type CheckUrlRulesResponse,
+  type TabCaptureStreamResponse,
   type RtcTrackMessage,
   type RtcControlMessage,
 } from '../types/index';
@@ -30,10 +32,13 @@ let engine: AudioEngine | null = null;
 let awake = false;
 let power = true;
 let drcEnabled = true;
+let monoEnabled = false;
 let oneOff: AudioSettings | null = null;
 let rtcAvailable = false; // injected WebRTC ses tespit etti mi?
 let rtcEnabled = false; // boost'u etkinleştirdik mi (sadece awake iken)?
 let observer: MutationObserver | null = null;
+let tabCaptureActive = false;
+let needsCapturePermission = false; // tabCapture izni reddedildi → popup banner
 
 let lastResolution: {
   settings: AudioSettings;
@@ -78,6 +83,7 @@ async function checkRules(url: string): Promise<CheckUrlRulesResponse | null> {
 function ingestResolution(res: CheckUrlRulesResponse): void {
   power = res.power;
   drcEnabled = res.drcEnabled;
+  monoEnabled = res.monoEnabled;
   lastResolution = {
     settings: res.settings ?? FALLBACK_SETTINGS,
     source: res.source,
@@ -86,17 +92,71 @@ function ingestResolution(res: CheckUrlRulesResponse): void {
   };
 }
 
+/**
+ * AudioEngine'in Layer 2 (tabCapture) fallback'i için streamId sağlayıcısı.
+ * chrome.runtime sadece content (ISOLATED) bağlamında var; bu yüzden engine'e enjekte edilir.
+ */
+async function tabCaptureProvider(): Promise<string | null> {
+  try {
+    const res = (await EventBus.publish({
+      type: MessageType.GET_TAB_CAPTURE_STREAM,
+    })) as TabCaptureStreamResponse | undefined;
+    if (!res) return null;
+    if (res.needsPermission) {
+      needsCapturePermission = true;
+      return null;
+    }
+    return res.streamId ?? null;
+  } catch (err) {
+    console.debug('[content] GET_TAB_CAPTURE_STREAM başarısız:', err);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Uyanma + ses bağlama
 // ---------------------------------------------------------------------------
 
+function ensureEngine(): AudioEngine {
+  if (!engine) {
+    engine = new AudioEngine();
+    engine.setTabCaptureProvider(tabCaptureProvider);
+  }
+  return engine;
+}
+
 function wake(): void {
-  if (!engine) engine = new AudioEngine();
+  ensureEngine();
   awake = true;
-  attachAllMedia();
+  const found = attachAllMedia();
   startObserving();
   applyEffective();
   if (rtcAvailable) enableRtc();
+  // TikTok/Instagram gibi siteler: DOM'da henüz media element yoksa retry
+  if (!found) void findAndAttach();
+}
+
+/**
+ * DOM'da henüz `<video>/<audio>` yoksa üstel geri çekilme ile tekrar dene.
+ * MutationObserver ve play event de paralelde çalışır — hangi yol önce bulursa.
+ */
+async function findAndAttach(retries = 6, delay = 600): Promise<boolean> {
+  const el = document.querySelector<HTMLMediaElement>('video, audio');
+  if (el && engine) {
+    await engine.attachToSource(el);
+    applyEffective();
+    return true;
+  }
+  if (retries <= 0) return false;
+  await new Promise<void>((r) => setTimeout(r, delay));
+  return findAndAttach(retries - 1, Math.round(delay * 1.4));
+}
+
+/** Katman 0: popup'tan gelen streamId ile tabCapture'ı AudioEngine'e bağla. */
+async function hookTabCaptureWithId(streamId: string): Promise<void> {
+  if (!engine || tabCaptureActive) return;
+  const ok = await engine.hookTabCapture(streamId);
+  if (ok) tabCaptureActive = true;
 }
 
 /** WebRTC boost'unu etkinleştir — sadece motor uyanıkken (lazy activation). */
@@ -110,13 +170,16 @@ function applyEffective(): void {
   engine.applySettings(effectiveSettings());
   engine.setDrcEnabled(drcEnabled);
   engine.setPower(power);
+  engine.setMono(monoEnabled);
   forwardToRtc();
 }
 
-function attachAllMedia(): void {
-  if (!engine) return;
+/** Mevcut tüm media elementlerini bağlar. En az biri bulunduysa true döner. */
+function attachAllMedia(): boolean {
+  if (!engine) return false;
   const media = document.querySelectorAll<HTMLMediaElement>('video, audio');
-  media.forEach((el) => engine!.attachToSource(el));
+  media.forEach((el) => void engine!.attachToSource(el));
+  return media.length > 0;
 }
 
 function startObserving(): void {
@@ -126,24 +189,28 @@ function startObserving(): void {
     for (const m of mutations) {
       m.addedNodes.forEach((node) => {
         if (node instanceof HTMLMediaElement) {
-          engine!.attachToSource(node);
+          void engine!.attachToSource(node);
         } else if (node instanceof Element) {
           node
             .querySelectorAll<HTMLMediaElement>('video, audio')
-            .forEach((el) => engine!.attachToSource(el));
+            .forEach((el) => void engine!.attachToSource(el));
         }
       });
     }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Dinamik oluşturulan media'yı yakalamak için play olayını da dinle.
+  // Play event: element oynatılınca bağla (engine aktif değilse ayarları da uygula).
   document.addEventListener(
     'play',
     (e) => {
-      if (engine && awake && e.target instanceof HTMLMediaElement) {
-        engine.attachToSource(e.target);
-      }
+      if (!engine || !awake) return;
+      const el = e.target;
+      if (!(el instanceof HTMLMediaElement)) return;
+      const wasActive = engine.isActive();
+      void engine.attachToSource(el).then(() => {
+        if (!wasActive) applyEffective();
+      });
     },
     true,
   );
@@ -183,6 +250,7 @@ window.addEventListener('message', (event) => {
 // ---------------------------------------------------------------------------
 
 function computeCaptureLayer(): CaptureLayer {
+  if (engine && engine.getCaptureLayer() === 'tab_capture') return 'tab_capture';
   if (rtcEnabled) return 'rtc';
   if (!engine) return 'none';
   return engine.getCaptureLayer();
@@ -190,6 +258,8 @@ function computeCaptureLayer(): CaptureLayer {
 
 function computeBadge(): Badge {
   if (!awake) return 'sleeping';
+  const layer = computeCaptureLayer();
+  if (layer === 'tab_capture') return 'tab_capture';
   if (rtcEnabled) return 'webrtc';
   if (engine && engine.isBypassed()) return 'bypassed';
   return 'active';
@@ -209,6 +279,7 @@ function buildState(): ResolvedState {
     captureLayer: computeCaptureLayer(),
     hasConflict: lastResolution?.hasConflict ?? false,
     host: currentHost(),
+    needsCapturePermission,
   };
 }
 
@@ -263,6 +334,18 @@ EventBus.subscribe(MessageType.SET_DRC, (msg) => {
   return buildState();
 });
 
+EventBus.subscribe(MessageType.SET_MONO, (msg) => {
+  monoEnabled = msg.payload.monoEnabled;
+  engine?.setMono(monoEnabled);
+  return buildState();
+});
+
+// Popup → Content: tabCapture streamId (MV3 doğru akış, Katman 0).
+EventBus.subscribe(MessageType.TAB_CAPTURE_STREAM_ID, (msg) => {
+  if (!awake) wake();
+  void hookTabCaptureWithId(msg.payload.streamId);
+});
+
 // Background: kurallar değişti → yeniden çöz. (Cevap döndürmez → senkron handler,
 // kanalı açık tutmaz; "message port closed" uyarısı oluşmaz.)
 EventBus.subscribe(MessageType.RULES_UPDATED, () => {
@@ -287,17 +370,30 @@ EventBus.subscribe(MessageType.RULES_UPDATED, () => {
 EventBus.subscribe(MessageType.URL_CHANGED, () => {
   void (async () => {
     oneOff = null;
+    // injected.ts'teki RTC active flag'ini sıfırla (SPA nav sonrası yeni stream)
+    window.postMessage({ source: RTC_RESET_EVENT }, '*');
     const res = await checkRules(location.href);
     if (!res) return;
     ingestResolution(res);
     if (awake) {
       applyEffective();
-      attachAllMedia();
+      const found = attachAllMedia();
+      if (!found) void findAndAttach();
     } else if (res.hasRule) {
       wake();
     }
   })();
 });
+
+// ---------------------------------------------------------------------------
+// AudioContext resume — ilk kullanıcı etkileşiminde (autoplay politikası)
+// ---------------------------------------------------------------------------
+
+document.addEventListener(
+  'click',
+  () => { engine?.tryResume(); },
+  { capture: true, passive: true, once: true },
+);
 
 // ---------------------------------------------------------------------------
 // Açılış — auto-wake (ARCHITECTURE bölüm 4.2)

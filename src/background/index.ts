@@ -11,6 +11,7 @@ import {
   MessageType,
   DEFAULT_STORAGE,
   type CheckUrlRulesResponse,
+  type TabCaptureStreamResponse,
 } from '../types/index';
 
 /** SPA navigasyon tespiti için sekme başına son URL (ARCHITECTURE bölüm 4.4). */
@@ -49,8 +50,35 @@ EventBus.subscribe(MessageType.CHECK_URL_RULES, async (msg, sender) => {
     hasConflict: resolved.hasConflict,
     power: data.isEnabled,
     drcEnabled: data.drcEnabled,
+    advancedCapture: data.advancedCapture,
+    monoEnabled: data.monoEnabled,
   };
   return response;
+});
+
+// ---------------------------------------------------------------------------
+// GET_TAB_CAPTURE_STREAM — otomatik tabCapture fallback (Content → Background)
+// Layer 1 (MediaElementSource) cross-origin video'da patlayınca content burayı çağırır.
+// ---------------------------------------------------------------------------
+
+EventBus.subscribe(MessageType.GET_TAB_CAPTURE_STREAM, (_msg, sender) => {
+  const tabId = sender.tab?.id;
+  return new Promise<TabCaptureStreamResponse>((resolve) => {
+    if (tabId == null) {
+      resolve({ streamId: null });
+      return;
+    }
+    chrome.permissions.contains({ permissions: ['tabCapture'] }, (hasPermission) => {
+      if (!hasPermission) {
+        // İzin yok → popup banner'ı üzerinden istenir.
+        resolve({ streamId: null, needsPermission: true });
+        return;
+      }
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+        resolve({ streamId: chrome.runtime.lastError ? null : streamId ?? null });
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -91,6 +119,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if ('drcEnabled' in changes) {
     const drcEnabled = Boolean(changes['drcEnabled']?.newValue ?? DEFAULT_STORAGE.drcEnabled);
     void broadcast({ type: MessageType.SET_DRC, payload: { drcEnabled } });
+  }
+
+  if ('monoEnabled' in changes) {
+    const monoEnabled = Boolean(changes['monoEnabled']?.newValue ?? DEFAULT_STORAGE.monoEnabled);
+    void broadcast({ type: MessageType.SET_MONO, payload: { monoEnabled } });
   }
 
   if (

@@ -100,6 +100,7 @@ export const DEFAULT_USER_PROFILE: UserProfile = {
 
 export type ThemeName = 'dark' | 'light';
 export type Language = 'tr' | 'en';
+export type AdvancedCapture = 'off' | 'global' | 'tab';
 
 export interface StorageSchema {
   // Auth (kanca)
@@ -114,6 +115,12 @@ export interface StorageSchema {
   onboardingCompleted: boolean;
   /** Global açma/kapama (power). Kapalıyken motor pass-through. */
   isEnabled: boolean;
+  /** Silme onayı modal gösterilsin mi? Varsayılan: true. */
+  confirmDelete: boolean;
+  /** Gelişmiş ses yakalama modu. off = mevcut waterfall, global/tab = tabCapture. */
+  advancedCapture: AdvancedCapture;
+  /** Mono indirgeme açık mı? Açıkken L+R tek kanala düşer. Varsayılan: false. */
+  monoEnabled: boolean;
 
   // Kurallar
   groups: Group[];
@@ -126,10 +133,13 @@ export const DEFAULT_STORAGE: StorageSchema = {
   tier: 'free',
   email: null,
   theme: 'dark',
-  language: 'tr',
+  language: 'en',
   drcEnabled: true,
   onboardingCompleted: false,
   isEnabled: true,
+  confirmDelete: true,
+  advancedCapture: 'off',
+  monoEnabled: false,
   groups: [],
   siteRules: [],
   globalDefault: { ...DEFAULT_AUDIO_SETTINGS, eq: [...DEFAULT_AUDIO_SETTINGS.eq] },
@@ -143,10 +153,11 @@ export const DEFAULT_STORAGE: StorageSchema = {
 export type RuleSource = 'one-off' | 'site' | 'group' | 'default';
 
 /** Popup rozeti. */
-export type Badge = 'active' | 'sleeping' | 'bypassed' | 'webrtc';
+export type Badge = 'active' | 'sleeping' | 'bypassed' | 'webrtc' | 'tab_capture';
 
 /** Ses yakalamanın hangi katmanla yapıldığı — ARCHITECTURE bölüm 5. */
 export type CaptureLayer =
+  | 'tab_capture' // Katman 0 (tabCapture — gelişmiş mod)
   | 'media_element' // Katman 1
   | 'media_stream' // Katman 2
   | 'rtc' // Katman 3 (WebRTC injection)
@@ -174,6 +185,8 @@ export interface ResolvedState {
   hasConflict: boolean;
   /** Mevcut sekmenin host'u (popup "Site Kaydet" için kullanır). */
   host: string;
+  /** tabCapture fallback denendi ama izin yok → popup banner gösterir. */
+  needsCapturePermission: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,9 +202,15 @@ export enum MessageType {
   SET_ONE_OFF = 'SET_ONE_OFF',
   SET_POWER_STATE = 'SET_POWER_STATE',
   SET_DRC = 'SET_DRC',
+  /** Popup/Background → Content: mono indirgemeyi aç/kapat. */
+  SET_MONO = 'SET_MONO',
 
   // Content → Background
   CHECK_URL_RULES = 'CHECK_URL_RULES',
+  /** Popup → Content: tabCapture streamId gönder (MV3 manuel akış). */
+  TAB_CAPTURE_STREAM_ID = 'TAB_CAPTURE_STREAM_ID',
+  /** Content → Background: tabCapture streamId iste (otomatik fallback). */
+  GET_TAB_CAPTURE_STREAM = 'GET_TAB_CAPTURE_STREAM',
 
   // Background → Content
   URL_CHANGED = 'URL_CHANGED',
@@ -236,9 +255,30 @@ export interface MsgSetDrc {
   payload: { drcEnabled: boolean };
 }
 
+export interface MsgSetMono {
+  type: MessageType.SET_MONO;
+  payload: { monoEnabled: boolean };
+}
+
 export interface MsgCheckUrlRules {
   type: MessageType.CHECK_URL_RULES;
   payload: { url: string };
+}
+
+export interface MsgTabCaptureStreamId {
+  type: MessageType.TAB_CAPTURE_STREAM_ID;
+  payload: { streamId: string };
+}
+
+export interface MsgGetTabCaptureStream {
+  type: MessageType.GET_TAB_CAPTURE_STREAM;
+}
+
+/** GET_TAB_CAPTURE_STREAM cevabı (background → content). */
+export interface TabCaptureStreamResponse {
+  streamId: string | null;
+  /** tabCapture izni yok → popup'tan izin istenmeli. */
+  needsPermission?: boolean;
 }
 
 /** CHECK_URL_RULES cevabı (background → content). */
@@ -252,6 +292,8 @@ export interface CheckUrlRulesResponse {
   /** Global ayarlar — auto-wake anında content'in ihtiyacı olanlar. */
   power: boolean;
   drcEnabled: boolean;
+  advancedCapture: AdvancedCapture;
+  monoEnabled: boolean;
 }
 
 export interface MsgUrlChanged {
@@ -281,7 +323,10 @@ export type MessagePayload =
   | MsgSetOneOff
   | MsgSetPowerState
   | MsgSetDrc
+  | MsgSetMono
   | MsgCheckUrlRules
+  | MsgTabCaptureStreamId
+  | MsgGetTabCaptureStream
   | MsgUrlChanged
   | MsgRulesUpdated
   | MsgSaveRule;
@@ -294,6 +339,8 @@ export type MessageOfType<T extends MessageType> = Extract<MessagePayload, { typ
 
 /** Injected (MAIN) → Content: WebRTC ses track'i yakalandı. */
 export const RTC_TRACK_EVENT = 'AUDIO_ENGINE_RTC_TRACK';
+/** Content (ISOLATED) → Injected (MAIN): SPA navigasyonunda state sıfırlama. */
+export const RTC_RESET_EVENT = 'AUDIO_ENGINE_RTC_RESET';
 /** Content → Injected (MAIN): canlı ayar gönder (volume/eq/drc/power). */
 export const RTC_CONTROL_EVENT = 'AUDIO_ENGINE_RTC_CONTROL';
 

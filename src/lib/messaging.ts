@@ -56,11 +56,27 @@ export async function setDrcLive(tabId: number, drcEnabled: boolean): Promise<Re
   return sendToTab(tabId, { type: MessageType.SET_DRC, payload: { drcEnabled } });
 }
 
+export async function setMonoLive(tabId: number, monoEnabled: boolean): Promise<ResolvedState | null> {
+  return sendToTab(tabId, { type: MessageType.SET_MONO, payload: { monoEnabled } });
+}
+
 /** Kalıcı kural kaydet (background'a). */
 export async function saveRule(payload: SaveRulePayload): Promise<void> {
   try {
     await chrome.runtime.sendMessage({ type: MessageType.SAVE_RULE, payload });
   } catch (err) {
     console.error('[messaging] SAVE_RULE başarısız:', err);
+  }
+}
+
+/** tabCapture streamId'sini content script'e gönder (Popup → Content). */
+export async function sendTabCaptureStreamId(tabId: number, streamId: string): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: MessageType.TAB_CAPTURE_STREAM_ID,
+      payload: { streamId },
+    });
+  } catch (err) {
+    console.debug('[messaging] TAB_CAPTURE_STREAM_ID gönderilemedi:', err);
   }
 }

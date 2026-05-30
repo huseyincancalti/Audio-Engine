@@ -8,6 +8,7 @@
 import { AudioEngine } from '../core/audio/AudioEngine';
 import {
   RTC_TRACK_EVENT,
+  RTC_RESET_EVENT,
   RTC_CONTROL_EVENT,
   type RtcTrackMessage,
   type RtcControlMessage,
@@ -68,15 +69,17 @@ interface PatchableWindow extends Window {
     if (!active || processed.has(stream) || !pending.has(stream)) return;
     const el = findElementFor(stream);
     if (el) {
-      const layer = engine.attachToSource(stream);
-      if (layer !== 'bypass') {
-        pending.delete(stream);
-        processed.add(stream);
-        el.muted = true; // orijinal playback'i sustur → boost'lu sesi biz veriyoruz
-        boostedCount++;
-        console.info('[injected] WebRTC ses boost zincirine alındı (Katman 3)');
-        notify();
-      }
+      void engine.attachToSource(stream).then((layer) => {
+        if (!pending.has(stream)) return;
+        if (layer !== 'bypass') {
+          pending.delete(stream);
+          processed.add(stream);
+          el.muted = true; // orijinal playback'i sustur → boost'lu sesi biz veriyoruz
+          boostedCount++;
+          console.info('[injected] WebRTC ses boost zincirine alındı (Katman 3)');
+          notify();
+        }
+      });
       return;
     }
     if (attempt < 6) window.setTimeout(() => flushStream(stream, attempt + 1), 400);
@@ -86,16 +89,28 @@ interface PatchableWindow extends Window {
     for (const stream of Array.from(pending)) flushStream(stream);
   }
 
-  // --- Content'ten canlı ayar kontrolü (boost'u etkinleştirir) ---
+  // --- Content'ten gelen mesajlar ---
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
-    const d = event.data as Partial<RtcControlMessage> | undefined;
-    if (!d || d.source !== RTC_CONTROL_EVENT) return;
+    const raw = event.data as Record<string, unknown> | undefined;
+    if (!raw || typeof raw.source !== 'string') return;
+
+    // SPA navigasyon reset: active flag'ini sıfırla, yeni sayfada sıfırdan başla
+    if (raw.source === RTC_RESET_EVENT) {
+      active = false;
+      boostedCount = 0;
+      return;
+    }
+
+    if (raw.source !== RTC_CONTROL_EVENT) return;
+    const d = raw as unknown as Partial<RtcControlMessage>;
     active = true;
     engine.setVolume(d.volume ?? 1);
     engine.setEq(d.eq ?? []);
     engine.setDrcEnabled(d.drcEnabled ?? true);
     engine.setPower(d.power ?? true);
+    // AudioContext suspended ise hemen resume et (WebRTC sesi değişmeme sorunu)
+    engine.tryResume();
     flushAll();
   });
 

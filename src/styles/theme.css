@@ -190,6 +190,13 @@ body {
 .badge-webrtc .dot {
   background: var(--primary);
 }
+.badge-tab_capture {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+}
+.badge-tab_capture .dot {
+  background: var(--green);
+}
 
 /* Toggle */
 .toggle {
@@ -263,14 +270,30 @@ body {
   box-shadow: 0 0 0 1px var(--border-strong);
 }
 
-/* Dikey EQ slider (Chromium) */
+/* Dikey EQ slider — writing-mode yöntemi (slider-vertical deprecated) */
 .eq-slider {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
   width: 8px;
-  height: 96px;
+  height: 56px;
   background: transparent;
   cursor: pointer;
+}
+.eq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.eq-slider::-webkit-slider-runnable-track {
+  width: 4px;
+  background: var(--track);
+  border-radius: 999px;
 }
 
 /* ===========================================================================

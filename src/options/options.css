@@ -440,3 +440,31 @@ body {
 .locked-slot {
   opacity: 0.7;
 }
+
+/* --- Gelişmiş ses yakalama kartı (C2) --- */
+.advanced-capture-card {
+  padding: 16px 18px;
+  margin-bottom: 12px;
+}
+.capture-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.capture-radio-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+  transition: background 0.1s;
+}
+.capture-radio-option:hover {
+  background: var(--surface-2);
+}
+.capture-radio-option input[type='radio'] {
+  accent-color: var(--primary);
+}
