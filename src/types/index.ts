@@ -1,12 +1,12 @@
 // src/types/index.ts
-// Tek tip kaynağı — tüm bağlamlar (content / background / popup / options) buradan import eder.
-// ARCHITECTURE.md bölüm 3, 11, 13.
+// Tek tip kaynağı — tüm bağlamlar (background / offscreen / popup / options) buradan import eder.
+// v5.0 Offscreen + tabCapture mimarisi (CLAUDE.md). Ses işleme offscreen'de, background orkestra şefi.
 
 // ---------------------------------------------------------------------------
 // Ses
 // ---------------------------------------------------------------------------
 
-/** Maksimum gain çarpanı. 10 = %1000 (ARCHITECTURE bölüm 8.2 / 14). */
+/** Maksimum gain çarpanı. 10 = %1000. */
 export const MAX_GAIN = 10;
 
 /** Gain rampası zaman sabiti (anti-crackle), saniye. */
@@ -24,7 +24,7 @@ export const EQ_BAND_COUNT = EQ_FREQUENCIES.length;
 /** Bir EQ band'ının dB cinsinden kazancı (-12 .. +12). */
 export type EQBand = number;
 
-/** DRC (DynamicsCompressor) sabit parametreleri — ARCHITECTURE bölüm 8.2. */
+/** DRC (DynamicsCompressor) sabit parametreleri. */
 export const DRC_PARAMS = {
   threshold: -24,
   knee: 30,
@@ -34,8 +34,8 @@ export const DRC_PARAMS = {
 } as const;
 
 /**
- * Bir sekmeye / kurala uygulanan ses yapılandırması.
- * NOT: DRC global bir anahtardır (StorageSchema.drcEnabled) — kural başına değil.
+ * Bir sekmeye / kurala uygulanan ses yapılandırması (volume + EQ).
+ * Mono/DRC global anahtarlardır; offscreen'e `CaptureSettings` içinde ulaşırlar.
  */
 export interface AudioSettings {
   /** Ses çarpanı. 1.0 = %100, 10.0 = %1000. Aralık: [0, MAX_GAIN]. */
@@ -52,6 +52,27 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
 /** Verilen ayarın derin kopyasını üretir (paylaşılan referans sızıntısını önler). */
 export function cloneSettings(s: AudioSettings): AudioSettings {
   return { volume: s.volume, eq: [...s.eq] };
+}
+
+/**
+ * Offscreen'in bir TabEngine'i (yeniden) kurmak için ihtiyaç duyduğu her şey.
+ * drc/mono global storage bayraklarıdır; sekme başına buraya katlanır ki offscreen
+ * grafiği kendi kendine yeterli olsun.
+ */
+export interface CaptureSettings {
+  volume: number;
+  eq: EQBand[];
+  drcEnabled: boolean;
+  monoEnabled: boolean;
+}
+
+/** AudioSettings + global bayraklardan CaptureSettings üretir. */
+export function toCaptureSettings(
+  settings: AudioSettings,
+  drcEnabled: boolean,
+  monoEnabled: boolean,
+): CaptureSettings {
+  return { volume: settings.volume, eq: [...settings.eq], drcEnabled, monoEnabled };
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +97,7 @@ export interface SiteRule {
 }
 
 // ---------------------------------------------------------------------------
-// Auth (kanca) — ARCHITECTURE bölüm 7
+// Auth (kanca)
 // ---------------------------------------------------------------------------
 
 export type Tier = 'free' | 'premium';
@@ -94,13 +115,12 @@ export const DEFAULT_USER_PROFILE: UserProfile = {
 };
 
 // ---------------------------------------------------------------------------
-// Storage şeması — ARCHITECTURE bölüm 13
-// Tek seferlik ayar burada YOK; sadece content script RAM'inde tutulur.
+// Storage şeması
+// Tek seferlik / sekme bazlı ayar burada YOK; background RAM'inde Map<tabId> tutulur.
 // ---------------------------------------------------------------------------
 
 export type ThemeName = 'dark' | 'light';
 export type Language = 'tr' | 'en';
-export type AdvancedCapture = 'off' | 'global' | 'tab';
 
 export interface StorageSchema {
   // Auth (kanca)
@@ -111,16 +131,13 @@ export interface StorageSchema {
   // Ayarlar
   theme: ThemeName;
   language: Language;
+  /** DRC global anahtar. */
   drcEnabled: boolean;
+  /** Mono indirgeme global anahtar. Açıkken L+R tek kanala düşer. */
+  monoEnabled: boolean;
   onboardingCompleted: boolean;
-  /** Global açma/kapama (power). Kapalıyken motor pass-through. */
-  isEnabled: boolean;
   /** Silme onayı modal gösterilsin mi? Varsayılan: true. */
   confirmDelete: boolean;
-  /** Gelişmiş ses yakalama modu. off = mevcut waterfall, global/tab = tabCapture. */
-  advancedCapture: AdvancedCapture;
-  /** Mono indirgeme açık mı? Açıkken L+R tek kanala düşer. Varsayılan: false. */
-  monoEnabled: boolean;
 
   // Kurallar
   groups: Group[];
@@ -135,225 +152,132 @@ export const DEFAULT_STORAGE: StorageSchema = {
   theme: 'dark',
   language: 'en',
   drcEnabled: true,
-  onboardingCompleted: false,
-  isEnabled: true,
-  confirmDelete: true,
-  advancedCapture: 'off',
   monoEnabled: false,
+  onboardingCompleted: false,
+  confirmDelete: true,
   groups: [],
   siteRules: [],
   globalDefault: { ...DEFAULT_AUDIO_SETTINGS, eq: [...DEFAULT_AUDIO_SETTINGS.eq] },
 };
 
 // ---------------------------------------------------------------------------
-// Çözülmüş durum — content script üretir, popup okur (ARCHITECTURE bölüm 3.3)
+// Popup durumu — background üretir, popup sadece gösterir.
 // ---------------------------------------------------------------------------
 
 /** Çözülen ayarın hangi katmandan geldiği. */
 export type RuleSource = 'one-off' | 'site' | 'group' | 'default';
 
 /** Popup rozeti. */
-export type Badge = 'active' | 'sleeping' | 'bypassed' | 'webrtc' | 'tab_capture';
-
-/** Ses yakalamanın hangi katmanla yapıldığı — ARCHITECTURE bölüm 5. */
-export type CaptureLayer =
-  | 'tab_capture' // Katman 0 (tabCapture — gelişmiş mod)
-  | 'media_element' // Katman 1
-  | 'media_stream' // Katman 2
-  | 'rtc' // Katman 3 (WebRTC injection)
-  | 'bypass' // hiçbiri çalışmadı
-  | 'none'; // henüz hiçbir kaynağa bağlanmadı (idle)
+export type Badge = 'active' | 'permission' | 'ready';
 
 /**
- * Content script'in popup'a döndürdüğü tek doğru durum.
- * Popup bu değeri sadece gösterir, kendi state'inde TUTMAZ.
+ * Background'ın popup'a döndürdüğü tek doğru durum.
+ * Popup bu değeri sadece gösterir; kendi state'inde TUTMAZ.
  */
-export interface ResolvedState {
-  /** Motor uyandı mı (idle değil mi)? */
-  awake: boolean;
-  /** Global power açık mı? */
-  power: boolean;
+export interface TabStatus {
+  /** Bu sekme şu an yakalanıyor mu? */
+  active: boolean;
+  /** tabCapture opsiyonel izni verilmemiş → popup banner gösterir. */
+  needsPermission: boolean;
   volume: number;
   eq: EQBand[];
   drcEnabled: boolean;
+  monoEnabled: boolean;
   source: RuleSource;
   /** Kullanıcıya gösterilecek kural etiketi, ör. "*.youtube.com" veya grup adı. */
   sourceLabel: string;
-  badge: Badge;
-  captureLayer: CaptureLayer;
   /** Aynı URL'e birden fazla kural eşleşiyor mu? */
   hasConflict: boolean;
   /** Mevcut sekmenin host'u (popup "Site Kaydet" için kullanır). */
   host: string;
-  /** tabCapture fallback denendi ama izin yok → popup banner gösterir. */
-  needsCapturePermission: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Mesaj protokolü (EventBus) — ARCHITECTURE bölüm 11
+// Kontrol protokolü (Popup ↔ Background) — EventBus tabanlı
 // ---------------------------------------------------------------------------
 
 export enum MessageType {
-  // Popup → Content
-  WAKE_UP_ENGINE = 'WAKE_UP_ENGINE',
-  GET_CURRENT_STATE = 'GET_CURRENT_STATE',
-  SET_LIVE_VOLUME = 'SET_LIVE_VOLUME',
-  SET_LIVE_EQ = 'SET_LIVE_EQ',
-  SET_ONE_OFF = 'SET_ONE_OFF',
-  SET_POWER_STATE = 'SET_POWER_STATE',
-  SET_DRC = 'SET_DRC',
-  /** Popup/Background → Content: mono indirgemeyi aç/kapat. */
-  SET_MONO = 'SET_MONO',
-
-  // Content → Background
-  CHECK_URL_RULES = 'CHECK_URL_RULES',
-  /** Popup → Content: tabCapture streamId gönder (MV3 manuel akış). */
-  TAB_CAPTURE_STREAM_ID = 'TAB_CAPTURE_STREAM_ID',
-  /** Content → Background: tabCapture streamId iste (otomatik fallback). */
-  GET_TAB_CAPTURE_STREAM = 'GET_TAB_CAPTURE_STREAM',
-
-  // Background → Content
-  URL_CHANGED = 'URL_CHANGED',
-  RULES_UPDATED = 'RULES_UPDATED',
+  // Popup → Background
+  ENABLE_AUDIO = 'ENABLE_AUDIO',
+  DISABLE_AUDIO = 'DISABLE_AUDIO',
+  UPDATE_SETTINGS = 'UPDATE_SETTINGS',
+  GET_TAB_STATUS = 'GET_TAB_STATUS',
 
   // Popup/Options → Background
   SAVE_RULE = 'SAVE_RULE',
+
+  // Offscreen → Background
+  CAPTURE_ENDED = 'CAPTURE_ENDED',
 }
 
 // --- Mesaj gövdeleri (discriminated union) ---
 
-export interface MsgWakeUpEngine {
-  type: MessageType.WAKE_UP_ENGINE;
+export interface MsgEnableAudio {
+  type: MessageType.ENABLE_AUDIO;
+  payload: { tabId: number; settings: CaptureSettings };
 }
 
-export interface MsgGetCurrentState {
-  type: MessageType.GET_CURRENT_STATE;
+export interface MsgDisableAudio {
+  type: MessageType.DISABLE_AUDIO;
+  payload: { tabId: number };
 }
 
-export interface MsgSetLiveVolume {
-  type: MessageType.SET_LIVE_VOLUME;
-  payload: { volume: number };
+export interface MsgUpdateSettings {
+  type: MessageType.UPDATE_SETTINGS;
+  payload: { tabId: number; settings: CaptureSettings };
 }
 
-export interface MsgSetLiveEq {
-  type: MessageType.SET_LIVE_EQ;
-  payload: { eq: EQBand[] };
+export interface MsgGetTabStatus {
+  type: MessageType.GET_TAB_STATUS;
+  payload: { tabId: number };
 }
 
-export interface MsgSetOneOff {
-  type: MessageType.SET_ONE_OFF;
-  payload: { settings: AudioSettings };
-}
-
-export interface MsgSetPowerState {
-  type: MessageType.SET_POWER_STATE;
-  payload: { power: boolean };
-}
-
-export interface MsgSetDrc {
-  type: MessageType.SET_DRC;
-  payload: { drcEnabled: boolean };
-}
-
-export interface MsgSetMono {
-  type: MessageType.SET_MONO;
-  payload: { monoEnabled: boolean };
-}
-
-export interface MsgCheckUrlRules {
-  type: MessageType.CHECK_URL_RULES;
-  payload: { url: string };
-}
-
-export interface MsgTabCaptureStreamId {
-  type: MessageType.TAB_CAPTURE_STREAM_ID;
-  payload: { streamId: string };
-}
-
-export interface MsgGetTabCaptureStream {
-  type: MessageType.GET_TAB_CAPTURE_STREAM;
-}
-
-/** GET_TAB_CAPTURE_STREAM cevabı (background → content). */
-export interface TabCaptureStreamResponse {
-  streamId: string | null;
-  /** tabCapture izni yok → popup'tan izin istenmeli. */
-  needsPermission?: boolean;
-}
-
-/** CHECK_URL_RULES cevabı (background → content). */
-export interface CheckUrlRulesResponse {
-  hasRule: boolean;
-  /** Çözülmüş ayar (kural varsa) — content bunu direkt uygular. */
-  settings: AudioSettings | null;
-  source: RuleSource;
-  sourceLabel: string;
-  hasConflict: boolean;
-  /** Global ayarlar — auto-wake anında content'in ihtiyacı olanlar. */
-  power: boolean;
-  drcEnabled: boolean;
-  advancedCapture: AdvancedCapture;
-  monoEnabled: boolean;
-}
-
-export interface MsgUrlChanged {
-  type: MessageType.URL_CHANGED;
-  payload: { url: string };
-}
-
-export interface MsgRulesUpdated {
-  type: MessageType.RULES_UPDATED;
-}
-
-/** Popup → Background: kalıcı kural kaydet. */
 export interface MsgSaveRule {
   type: MessageType.SAVE_RULE;
   payload: SaveRulePayload;
+}
+
+export interface MsgCaptureEnded {
+  type: MessageType.CAPTURE_ENDED;
+  payload: { tabId: number };
 }
 
 export type SaveRulePayload =
   | { kind: 'site'; pattern: string; settings: AudioSettings }
   | { kind: 'group'; groupId: string; pattern: string; settings: AudioSettings };
 
+/** ENABLE_AUDIO cevabı (background → popup). */
+export interface EnableResponse {
+  ok?: true;
+  /** tabCapture izni yok → popup banner gösterir. */
+  needsPermission?: true;
+}
+
 export type MessagePayload =
-  | MsgWakeUpEngine
-  | MsgGetCurrentState
-  | MsgSetLiveVolume
-  | MsgSetLiveEq
-  | MsgSetOneOff
-  | MsgSetPowerState
-  | MsgSetDrc
-  | MsgSetMono
-  | MsgCheckUrlRules
-  | MsgTabCaptureStreamId
-  | MsgGetTabCaptureStream
-  | MsgUrlChanged
-  | MsgRulesUpdated
-  | MsgSaveRule;
+  | MsgEnableAudio
+  | MsgDisableAudio
+  | MsgUpdateSettings
+  | MsgGetTabStatus
+  | MsgSaveRule
+  | MsgCaptureEnded;
 
 export type MessageOfType<T extends MessageType> = Extract<MessagePayload, { type: T }>;
 
 // ---------------------------------------------------------------------------
-// MAIN-world ↔ content köprüsü (window.postMessage) — Katman 3 (WebRTC)
+// Offscreen protokolü (Background/Popup → Offscreen)
+// Offscreen kendi raw chrome.runtime.onMessage dinleyicisini `target:'offscreen'` ile filtreler;
+// bu yüzden MessagePayload union'ına dahil DEĞİL.
 // ---------------------------------------------------------------------------
 
-/** Injected (MAIN) → Content: WebRTC ses track'i yakalandı. */
-export const RTC_TRACK_EVENT = 'AUDIO_ENGINE_RTC_TRACK';
-/** Content (ISOLATED) → Injected (MAIN): SPA navigasyonunda state sıfırlama. */
-export const RTC_RESET_EVENT = 'AUDIO_ENGINE_RTC_RESET';
-/** Content → Injected (MAIN): canlı ayar gönder (volume/eq/drc/power). */
-export const RTC_CONTROL_EVENT = 'AUDIO_ENGINE_RTC_CONTROL';
+export const OFFSCREEN_TARGET = 'offscreen' as const;
 
-export interface RtcTrackMessage {
-  source: typeof RTC_TRACK_EVENT;
-  /** Yakalanan aktif ses stream sayısı. */
-  streamCount: number;
-}
+export type OffscreenMsg =
+  | { target: typeof OFFSCREEN_TARGET; type: 'START_CAPTURE'; tabId: number; streamId: string; settings: CaptureSettings }
+  | { target: typeof OFFSCREEN_TARGET; type: 'UPDATE_SETTINGS'; tabId: number; settings: CaptureSettings }
+  | { target: typeof OFFSCREEN_TARGET; type: 'STOP_CAPTURE'; tabId: number }
+  | { target: typeof OFFSCREEN_TARGET; type: 'GET_LEVEL'; tabId: number };
 
-export interface RtcControlMessage {
-  source: typeof RTC_CONTROL_EVENT;
-  volume: number;
-  eq: EQBand[];
-  drcEnabled: boolean;
-  power: boolean;
+/** GET_LEVEL cevabı (offscreen → popup). */
+export interface LevelResponse {
+  level: number;
 }

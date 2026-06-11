@@ -11,7 +11,7 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { Toast, type ToastData } from '../components/Toast';
 import { ContribModal } from '../components/ContribModal';
 import { GitHubIcon } from '../components/GitHubIcon';
-import type { Group, ThemeName, Language, AdvancedCapture } from '../types/index';
+import type { Group, ThemeName, Language } from '../types/index';
 
 type Screen = 'start' | 'groups' | 'allRules' | 'settings';
 
@@ -67,7 +67,6 @@ export function Dashboard() {
   const setLang = (l: Language) => void update({ language: l });
   const onSetTheme = (th: ThemeName) => void update({ theme: th });
   const onToggleDrc = (v: boolean) => void update({ drcEnabled: v });
-  const onSetAdvancedCapture = (v: AdvancedCapture) => void update({ advancedCapture: v });
   const onSetConfirmDelete = (v: boolean) => void update({ confirmDelete: v });
 
   // --- Grup CRUD ---
@@ -142,7 +141,6 @@ export function Dashboard() {
             data={data}
             onToggleDrc={onToggleDrc}
             onSetTheme={onSetTheme}
-            onSetAdvancedCapture={onSetAdvancedCapture}
             onSetConfirmDelete={onSetConfirmDelete}
             lang={lang}
             setLang={setLang}

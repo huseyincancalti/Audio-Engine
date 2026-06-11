@@ -1,14 +1,14 @@
 // src/lib/messaging.ts
-// Popup → aktif sekmenin content script'i ile, ve Popup/Options → background ile
-// tip-güvenli mesajlaşma yardımcıları.
+// Popup → Background (kontrol) ve Popup → Offscreen (VU seviyesi) tip-güvenli yardımcıları.
 
 import {
   MessageType,
-  type ResolvedState,
-  type AudioSettings,
-  type EQBand,
-  type MessageOfType,
+  OFFSCREEN_TARGET,
+  type CaptureSettings,
+  type EnableResponse,
+  type TabStatus,
   type SaveRulePayload,
+  type LevelResponse,
 } from '../types/index';
 
 export async function getActiveTabId(): Promise<number | null> {
@@ -16,48 +16,66 @@ export async function getActiveTabId(): Promise<number | null> {
   return tab?.id ?? null;
 }
 
-async function sendToTab<T extends MessageType>(
-  tabId: number,
-  message: MessageOfType<T>,
-): Promise<ResolvedState | null> {
+/** Sekmenin güncel durumunu background'dan al (popup tek doğru kaynak olarak bunu gösterir). */
+export async function getTabStatus(tabId: number): Promise<TabStatus | null> {
   try {
-    return (await chrome.tabs.sendMessage(tabId, message)) as ResolvedState;
+    return (await chrome.runtime.sendMessage({
+      type: MessageType.GET_TAB_STATUS,
+      payload: { tabId },
+    })) as TabStatus;
   } catch {
-    // content script yok (ör. chrome:// sayfası) veya henüz hazır değil.
     return null;
   }
 }
 
-export async function getCurrentState(tabId: number): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.GET_CURRENT_STATE });
+/** Bu sekme için yakalamayı başlat. İzin yoksa { needsPermission:true } döner. */
+export async function enableAudio(
+  tabId: number,
+  settings: CaptureSettings,
+): Promise<EnableResponse> {
+  try {
+    return (await chrome.runtime.sendMessage({
+      type: MessageType.ENABLE_AUDIO,
+      payload: { tabId, settings },
+    })) as EnableResponse;
+  } catch {
+    return {};
+  }
 }
 
-export async function wakeEngine(tabId: number): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.WAKE_UP_ENGINE });
+/** Bu sekme için yakalamayı durdur (sekme orijinal sesini normal çalar). */
+export async function disableAudio(tabId: number): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({ type: MessageType.DISABLE_AUDIO, payload: { tabId } });
+  } catch {
+    /* background uykuda olabilir */
+  }
 }
 
-export async function setLiveVolume(tabId: number, volume: number): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_LIVE_VOLUME, payload: { volume } });
+/** Canlı ayar gönder (yakalama aktifse offscreen'e yansır). */
+export async function updateSettings(tabId: number, settings: CaptureSettings): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({
+      type: MessageType.UPDATE_SETTINGS,
+      payload: { tabId, settings },
+    });
+  } catch {
+    /* yoksay */
+  }
 }
 
-export async function setLiveEq(tabId: number, eq: EQBand[]): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_LIVE_EQ, payload: { eq } });
-}
-
-export async function setOneOff(tabId: number, settings: AudioSettings): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_ONE_OFF, payload: { settings } });
-}
-
-export async function setPowerState(tabId: number, power: boolean): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_POWER_STATE, payload: { power } });
-}
-
-export async function setDrcLive(tabId: number, drcEnabled: boolean): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_DRC, payload: { drcEnabled } });
-}
-
-export async function setMonoLive(tabId: number, monoEnabled: boolean): Promise<ResolvedState | null> {
-  return sendToTab(tabId, { type: MessageType.SET_MONO, payload: { monoEnabled } });
+/** VU metre seviyesi — doğrudan offscreen'e sorar (background'ı es geçer). */
+export async function getLevel(tabId: number): Promise<number> {
+  try {
+    const res = (await chrome.runtime.sendMessage({
+      target: OFFSCREEN_TARGET,
+      type: 'GET_LEVEL',
+      tabId,
+    })) as LevelResponse | undefined;
+    return res?.level ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Kalıcı kural kaydet (background'a). */
@@ -66,17 +84,5 @@ export async function saveRule(payload: SaveRulePayload): Promise<void> {
     await chrome.runtime.sendMessage({ type: MessageType.SAVE_RULE, payload });
   } catch (err) {
     console.error('[messaging] SAVE_RULE başarısız:', err);
-  }
-}
-
-/** tabCapture streamId'sini content script'e gönder (Popup → Content). */
-export async function sendTabCaptureStreamId(tabId: number, streamId: string): Promise<void> {
-  try {
-    await chrome.tabs.sendMessage(tabId, {
-      type: MessageType.TAB_CAPTURE_STREAM_ID,
-      payload: { streamId },
-    });
-  } catch (err) {
-    console.debug('[messaging] TAB_CAPTURE_STREAM_ID gönderilemedi:', err);
   }
 }

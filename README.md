@@ -1,34 +1,38 @@
-# Audio Engine 🎚️ (v4)
+# Audio Engine 🎚️ (v5)
 
 Pattern bazlı **ses yükseltici + ekolayzır + DRC** Chrome eklentisi (Manifest V3). Sekmedeki
 sesi kurallarla yönetir: `*.youtube.com → %150`, `*.netflix.com → %57` gibi. Kayıtlı kural
-olan siteye gidince **popup açmadan otomatik uygulanır** (auto-wake). WebRTC tabanlı siteler
-(Meet, Discord) için 3 katmanlı ses yakalama içerir.
+olan siteye gidince **popup açmadan otomatik uygulanır** (auto-wake).
 
-> Mimari ve tasarım kararları için `ARCHITECTURE.md`. Bu eklenti onun v4 modelini birebir
-> uygular: **Tek Doğru Kaynak (content script) + net öncelik sırası + lazy activation.**
+v5'te ses yakalama katmanı **tamamen yeniden yazıldı**: artık `chrome.tabCapture` +
+**offscreen document** kullanılıyor (endüstri standardı — Volume Master vb.). tabCapture
+sekmenin **çıkış miksini** yakaladığı için CORS/tainted sorunu yoktur ve **her sitede**
+(TikTok, Netflix, Meet, hdfilmcehennemi…) çalışır — sadece YouTube değil.
+
+> Tasarım kararlarının arka planı için `ARCHITECTURE.md`. Yakalama mimarisi `CLAUDE.md`
+> v5.0 spesifikasyonunu uygular.
 
 ---
 
-## v4'te yeni neler var?
+## v5'te yeni neler var?
 
+- 🎯 **Offscreen + tabCapture motoru** — ses işleme tek bir offscreen document'te,
+  sekme başına `Map<tabId, TabEngine>` ile yapılır. Background orkestra şefidir; popup
+  ince bir görünümdür.
+- 🌐 **Her sitede çalışır** — cross-origin `<video>` (TikTok/Netflix) artık CORS'a takılmaz.
 - 🔊 **Ses %0–%1000** (`MAX_GAIN = 10`), patlama korumalı yumuşak gain rampası.
-- 🛡️ **DRC** — `DynamicsCompressorNode` ile dinamik aralık sıkıştırma (dashboard'dan toggle).
-- ⚡ **Auto-Wake** — kayıtlı kural varsa content script kendiliğinden uyanır; popup gerekmez.
-  SPA geçişleri (YouTube video değişimi) `tabs.onUpdated` ile izlenir.
-- 🎥 **3 Katmanlı ses yakalama** — MediaElement → MediaStream → **WebRTC injection (MAIN world)**
-  → Bypass. WebRTC sesi yakalanırken kullanıcıya **hiçbir izin kutusu** çıkmaz.
-- 🧠 **Tek seferlik ayar artık sadece RAM'de** — `storage.session` kullanılmaz, sayfa
-  yenilenince kaybolur.
-- 🌍 **i18n (TR/EN)** — varsayılan Türkçe; dashboard'dan dil değişimi + çeviri katkı akışı.
-- 🎨 **Tema** — Dark (Noir+Rose) / Light (Frost+Rose), CSS variable tabanlı.
-- 🔒 **Auth kancaları** — `TierGate` (free/premium); premium özellikler şimdilik açık.
+- 🛡️ **DRC** ve 🎧 **Mono** — global anahtarlar; aktif yakalamalarda zincir anında yeniden kurulur.
+- ⚡ **Auto-Wake** — kayıtlı kuralı olan sekme aktifleşince/yüklenince background sessizce başlatır.
+- 🔐 **Tek seferlik izin** — `tabCapture` opsiyonel izindir; kullanıcı bir ses aksiyonu
+  yapınca (slider oynatma / kaydet) bir kez istenir, içerik scripti yoktur.
+- 📊 **VU metre** — popup açıkken offscreen'den 200ms'de bir seviye okunur; ses varken rozet nabız atar.
+- 🌍 **i18n (TR/EN)**, 🎨 **Tema** (Dark/Light), 🔒 **Auth kancaları** (`TierGate`) korunur.
 
-### Korunan v2/v3 davranışları
+### Korunan davranışlar
 - 🎯 Pattern + spesifiklik: `music.youtube.com` (exact) > `*.youtube.com` > `*.com`.
-- 👥 Sınırsız grup, sınırsız pattern.
-- 🔌 Güç/Bypass: node'lar koparılmadan gain yumuşakça native'e çekilir.
-- 🔒 Sekme izolasyonu; popup değer **tutmaz**, her açılışta content'ten çözülmüş değeri çeker.
+- 👥 Sınırsız grup, sınırsız pattern; site/grup kuralları + global varsayılan.
+- 🔒 Sekme izolasyonu (her sekme kendi AudioContext'i); popup değer **tutmaz**, durumu
+  background'dan çeker.
 
 ---
 
@@ -42,24 +46,24 @@ npm run build      # dist/ üretir
 npm run typecheck  # tsc --noEmit
 ```
 
-`npm run build` 5 bundle üretir (`build.js` orkestratörü):
+`npm run build` (`build.js` orkestratörü) şu çıktıları üretir:
 
 | # | Bundle | Araç | Çıktı |
 |---|--------|------|-------|
 | 1 | Popup (React) | Vite | `dist/assets/*` + `dist/src/popup/index.html` |
 | 2 | Options (React) | Vite | `dist/assets/*` + `dist/src/options/index.html` |
-| 3 | `content/index.ts` | esbuild IIFE | `dist/content.js` |
-| 4 | `background/index.ts` | esbuild IIFE | `dist/background.js` |
-| 5 | `content/injected.ts` | esbuild IIFE (MAIN world) | `dist/injected.js` |
+| 3 | `background/index.ts` | esbuild IIFE | `dist/background.js` |
+| 4 | `offscreen/offscreen.ts` | esbuild IIFE | `dist/offscreen/offscreen.js` |
 
 ```
 dist/
 ├── manifest.json
-├── background.js      # service worker (IIFE)
-├── content.js         # content script — isolated world (IIFE)
-├── injected.js        # WebRTC hook — MAIN world (IIFE)
-├── icons/             # 16 / 48 / 128 px
-├── assets/            # React popup + options bundle'ları
+├── background.js          # service worker / orkestra şefi (IIFE)
+├── offscreen/
+│   ├── offscreen.html
+│   └── offscreen.js       # Web Audio motoru, sekme başına (IIFE)
+├── icons/                 # 16 / 48 / 128 px
+├── assets/                # React popup + options bundle'ları
 └── src/
     ├── popup/index.html
     └── options/index.html
@@ -75,29 +79,36 @@ dist/
 ## Mimari özet
 
 ```
-injected.js (MAIN world)  ──postMessage──►  content.js (isolated, TEK doğru kaynak)
-  RTCPeerConnection hook                       │ precedence çözer, AudioEngine'i sürer
-                                               │
-Popup (pure view) ──GET_CURRENT_STATE/SET_*──► content.js
-        │                                        ▲
-        └──SAVE_RULE──► background ──storage──► (kalıcı kurallar)
-                          │  CHECK_URL_RULES'a cevap verir (auto-wake oracle)
-                          │  tabs.onUpdated → URL_CHANGED (SPA navigasyon)
-                          │  storage.onChanged → RULES_UPDATED / SET_DRC yayını
+┌──────────┐   komut     ┌────────────┐  target:'offscreen' ┌───────────────────┐
+│  Popup   │ ──────────► │ Background │ ──────────────────► │ Offscreen Document │
+│ (React)  │  ENABLE /   │  (worker)  │   START / UPDATE /  │  (Web Audio motoru)│
+└──────────┘  DISABLE /  └────────────┘   STOP_CAPTURE      └───────────────────┘
+     │        UPDATE /          │                                    │
+     │        GET_TAB_STATUS    │  getMediaStreamId(tabId)           │ getUserMedia(tab)
+     └──── GET_LEVEL ───────────┴──────────────────────────────────►│ gain+EQ+DRC+mono
+                            ▲ CAPTURE_ENDED (stream bitince)         │ → destination
 ```
 
-### Ses zinciri
+- **Background**: izin/streamId, offscreen yaşam döngüsü, auto-wake, kural çözümü, sekme
+  başına RAM ayarları (`Map<tabId, CaptureSettings>`).
+- **Offscreen**: her sekme için tabCapture stream'ini Web Audio ile işler; mono/DRC değişince
+  zinciri yeniden bağlar; VU seviyesi döndürür.
+- **Popup**: saf görünüm; güç düğmesi = bu sekme için yakalamayı aç/kapat.
+
+### Ses zinciri (offscreen, sekme başına)
 ```
-kaynak (element / stream / RTC track)
+tabCapture stream
   → BiquadFilter ×5 (EQ: 60/250/1k/4k/12k Hz, ±12dB)
   → GainNode (0–10x / %1000)
-  → DynamicsCompressorNode (DRC: -24dB / 30 / 12 / 3ms / 250ms)
+  → [mono?  splitter→merger]
+  → [drc?   DynamicsCompressor: -24dB / 30 / 12 / 3ms / 250ms]
+  → AnalyserNode (VU)
   → destination
 ```
 
 ### Öncelik sırası (precedence)
 ```
-1. Tek seferlik    (RAM, kaydedilmez, yenilemede kaybolur)
+1. Tek seferlik (kullanıcı elle ayarladı; RAM, kaydedilmez)
 2. Exact match     (music.youtube.com)
 3. Subdomain *.    (*.youtube.com)
 4. Geniş wildcard  (*.com / grup pattern'i)
@@ -109,25 +120,21 @@ exact > site > grup.
 ---
 
 ## Manuel test senaryoları
-1. **Auto-wake** — YouTube'da %150 + "Site Kaydet". Yeni sekmede YouTube aç → popup
-   açmadan %150 uygulanmış olmalı.
-2. **Tek seferlik** — Bir sekmede %80 "Tek Seferlik". Sayfayı yenile → ayar gitmeli, kural
-   ayarına dönmeli.
-3. **SPA** — YouTube'da video değiştir → ayar sıfırlanmamalı.
-4. **WebRTC** — Google Meet'te ses değişikliği dene → çökme olmamalı; en azından konsolda
-   `[injected] ... WebRTC hook` logu görünmeli (kural varsa boost devreye girer).
-5. **İzolasyon** — İki sekme; biri %200, diğeri %100 → birbirini etkilemez.
-6. **Tema** — Dark + Light her elemanda doğru görünmeli.
+1. **İzin** — Bir sekmede slider'ı oynat → tek seferlik `tabCapture` izni istenir → ver.
+2. **YouTube** %500 → çalışmalı.
+3. **TikTok** ses değişimi → çalışmalı (asıl cross-origin testi).
+4. **Netflix / Google Meet / hdfilmcehennemi** → çalışmalı.
+5. **Mono** toggle → ses tek kanala düşmeli.
+6. **VU metre** → ses varken rozet nabız atmalı.
+7. **İzolasyon** — İki sekme; biri %200, diğeri %100 → birbirini etkilemez.
+8. **Auto-wake** — Kayıtlı kuralı olan siteyi yeni sekmede aç → popup açmadan uygulanmalı.
 
 ---
 
 ## Bilinen sınırlar
-- `all_frames: false` — yalnızca üst çerçevedeki media kontrol edilir.
-- CORS başlığı olmayan çapraz-kaynak media Web Audio'dan geçerken Chrome tarafından
-  susturulabilir; bu durumda gücü kapatıp (Bypass) sekmeyi yenileyin.
-- WebRTC (Katman 3): uzak sesi yakalamak için orijinal `<audio>` öğesi `muted` yapılıp boost'lu
-  ses paralel zincirden verilir. Eklenti çalışırken devre dışı bırakılırsa ses, sayfa
-  yenilenene kadar susabilir.
+- tabCapture yalnızca **normal web sekmelerinde** çalışır; `chrome://`, Web Store ve eklenti
+  sayfaları yakalanamaz.
+- İzin verilmeden ses işlenmez — bu bilinçli bir tasarımdır (offscreen + tabCapture gereği).
 - Çeviri katkısı: `src/i18n/en.json` → çevir → PR aç **veya** huseyincancalti@gmail.com.
 
 ---
@@ -135,5 +142,5 @@ exact > site > grup.
 ## Komutlar
 | Komut | Açıklama |
 |---|---|
-| `npm run build` | `dist/` üretir (Vite + esbuild ×3 + ikon + manifest). |
+| `npm run build` | `dist/` üretir (Vite + esbuild ×2 + ikon + offscreen.html + manifest). |
 | `npm run typecheck` | `tsc --noEmit` ile tip kontrolü. |

@@ -1,40 +1,44 @@
 // src/popup/Popup.tsx
-// Saf görünüm (ARCHITECTURE bölüm 3.3).
-// tabCapture akışı buradan yürütülür (MV3'te popup extension page sayılır).
+// Saf görünüm. Kontrol mesajları background'a, VU seviyesi offscreen'e gider.
+// Güç düğmesi = bu sekme için yakalamayı aç/kapat.
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useStorage } from '../lib/useStorage';
 import { useTranslation } from '../i18n/index';
 import {
   getActiveTabId,
-  getCurrentState,
-  setLiveVolume,
-  setLiveEq,
-  setPowerState,
-  setDrcLive,
-  setMonoLive,
+  getTabStatus,
+  enableAudio,
+  disableAudio,
+  updateSettings,
+  getLevel,
   saveRule,
-  sendTabCaptureStreamId,
 } from '../lib/messaging';
 import { StorageManager } from '../core/storage/StorageManager';
 import { urlToPattern } from '../core/rules/PatternMatcher';
-import { isValidHex } from '../lib/colors';
-import { DEFAULT_GROUP_COLOR } from '../lib/colors';
+import { isValidHex, DEFAULT_GROUP_COLOR } from '../lib/colors';
 import { ColorPicker } from '../components/ColorPicker';
-import { EQ_FREQUENCIES, MAX_GAIN, type ResolvedState, type Badge } from '../types/index';
+import {
+  EQ_FREQUENCIES,
+  MAX_GAIN,
+  type CaptureSettings,
+  type TabStatus,
+  type Badge,
+} from '../types/index';
 import { Toast, type ToastData } from '../components/Toast';
 
 const MAX_PCT = MAX_GAIN * 100;
+const VU_THRESHOLD = 1; // bu seviyenin üzerinde rozet nabız atar
 
 function freqLabel(hz: number): string {
   return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
 }
 
-function BadgeView({ badge }: { badge: Badge }) {
+function BadgeView({ badge, pulse }: { badge: Badge; pulse: boolean }) {
   const { t } = useTranslation();
   return (
     <span className={`chip badge-${badge}`}>
-      <span className="dot" />
+      <span className={`dot${pulse ? ' dot-pulse' : ''}`} />
       {t(`badge.${badge}`)}
     </span>
   );
@@ -45,7 +49,7 @@ export function Popup() {
   const { t, setLanguage } = useTranslation();
 
   const [tabId, setTabId] = useState<number | null>(null);
-  const [state, setState] = useState<ResolvedState | null>(null);
+  const [status, setStatus] = useState<TabStatus | null>(null);
   const [ready, setReady] = useState(false);
   const [vol, setVol] = useState(100);
   const [eq, setEq] = useState<number[]>([0, 0, 0, 0, 0]);
@@ -53,6 +57,7 @@ export function Popup() {
   const [unsaved, setUnsaved] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [permDismissed, setPermDismissed] = useState(false);
+  const [level, setLevel] = useState(0);
 
   // Save Group modal
   const [groupModalOpen, setGroupModalOpen] = useState(false);
@@ -60,8 +65,14 @@ export function Popup() {
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupColor, setNewGroupColor] = useState<string>(DEFAULT_GROUP_COLOR);
 
-  const tabCaptureTriggered = useRef(false);
+  const updateTimer = useRef<number | null>(null);
+  const enabling = useRef(false);
+  // Yakalama başlatılırken hızlı slider hareketleri düşmesin diye en güncel ayarı tut.
+  const latest = useRef<CaptureSettings | null>(null);
   const theme = data?.theme ?? 'dark';
+  const drcOn = data?.drcEnabled ?? true;
+  const monoOn = data?.monoEnabled ?? false;
+  const groups = data?.groups ?? [];
 
   useEffect(() => {
     if (data) setLanguage(data.language);
@@ -72,43 +83,65 @@ export function Popup() {
       const id = await getActiveTabId();
       setTabId(id);
       if (id != null) {
-        const s = await getCurrentState(id);
-        if (s) setState(s);
+        const s = await getTabStatus(id);
+        if (s) setStatus(s);
       }
       setReady(true);
     })();
   }, []);
 
-  // tabCapture: popup yüklenince ve advancedCapture aktifse streamId üret → content'e gönder
   useEffect(() => {
-    if (!data || !tabId || tabCaptureTriggered.current) return;
-    if (data.advancedCapture === 'off') return;
-
-    tabCaptureTriggered.current = true;
-    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
-      if (chrome.runtime.lastError || !streamId) {
-        void update({ advancedCapture: 'off' });
-        setToast({ message: t('popup.tabCaptureError'), variant: 'default' });
-        return;
-      }
-      void sendTabCaptureStreamId(tabId, streamId);
-    });
-  }, [data, tabId, update, t]);
-
-  useEffect(() => {
-    if (state && !seeded) {
-      setVol(Math.round(state.volume * 100));
-      setEq(state.eq.length === EQ_FREQUENCIES.length ? [...state.eq] : [0, 0, 0, 0, 0]);
+    if (status && !seeded) {
+      setVol(Math.round(status.volume * 100));
+      setEq(status.eq.length === EQ_FREQUENCIES.length ? [...status.eq] : [0, 0, 0, 0, 0]);
       setSeeded(true);
     }
-  }, [state, seeded]);
+  }, [status, seeded]);
 
-  const apply = (s: ResolvedState | null) => { if (s) setState(s); };
+  // VU metre — yalnızca yakalama aktifken 200ms'de bir sorgula.
+  useEffect(() => {
+    if (!status?.active || tabId == null) {
+      setLevel(0);
+      return;
+    }
+    const poll = window.setInterval(() => {
+      void getLevel(tabId).then(setLevel);
+    }, 200);
+    return () => window.clearInterval(poll);
+  }, [status?.active, tabId]);
+
+  const currentSettings = useCallback(
+    (): CaptureSettings => ({ volume: vol / 100, eq, drcEnabled: drcOn, monoEnabled: monoOn }),
+    [vol, eq, drcOn, monoOn],
+  );
+
+  /** Yakalama aktifse offscreen'e debounce'lu canlı ayar gönder; değilse başlat. */
+  const applyLive = (next: CaptureSettings) => {
+    if (tabId == null) return;
+    latest.current = next; // düşen hızlı hareketler bile en güncel değeri bırakır
+    if (status?.active) {
+      if (updateTimer.current) window.clearTimeout(updateTimer.current);
+      updateTimer.current = window.setTimeout(() => void updateSettings(tabId, next), 50);
+      return;
+    }
+    if (enabling.current) return;
+    enabling.current = true;
+    void enableAudio(tabId, next).then((res) => {
+      enabling.current = false;
+      if (res.needsPermission) {
+        setStatus((s) => (s ? { ...s, needsPermission: true } : s));
+      } else if (res.ok) {
+        setStatus((s) => (s ? { ...s, active: true, needsPermission: false } : s));
+        // Başlatma sırasında düşmüş olabilecek en son değeri offscreen'e senkronla.
+        if (latest.current) void updateSettings(tabId, latest.current);
+      }
+    });
+  };
 
   const onVolume = (pct: number) => {
     setVol(pct);
     setUnsaved(true);
-    if (tabId != null) void setLiveVolume(tabId, pct / 100).then(apply);
+    applyLive({ volume: pct / 100, eq, drcEnabled: drcOn, monoEnabled: monoOn });
   };
 
   const onEqBand = (i: number, value: number) => {
@@ -116,33 +149,36 @@ export function Popup() {
     next[i] = value;
     setEq(next);
     setUnsaved(true);
-    if (tabId != null) void setLiveEq(tabId, next).then(apply);
+    applyLive({ volume: vol / 100, eq: next, drcEnabled: drcOn, monoEnabled: monoOn });
   };
 
+  // Güç düğmesi: aktifse durdur, değilse başlat.
   const togglePower = () => {
-    if (tabId == null || !state) return;
-    void setPowerState(tabId, !state.power).then(apply);
+    if (tabId == null) return;
+    if (status?.active) {
+      void disableAudio(tabId);
+      setStatus((s) => (s ? { ...s, active: false } : s));
+    } else {
+      applyLive(currentSettings());
+    }
   };
 
+  // DRC/Mono global anahtarlar — storage'a yaz; background aktif yakalamalara yansıtır.
   const toggleDrc = () => {
-    if (!data || tabId == null) return;
-    const next = !data.drcEnabled;
-    void update({ drcEnabled: next });
-    void setDrcLive(tabId, next).then(apply);
+    if (data) void update({ drcEnabled: !data.drcEnabled });
   };
-
   const toggleMono = () => {
-    if (!data || tabId == null) return;
-    const next = !data.monoEnabled;
-    void update({ monoEnabled: next });
-    void setMonoLive(tabId, next).then(apply);
+    if (data) void update({ monoEnabled: !data.monoEnabled });
   };
 
   const grantCapturePermission = () => {
     chrome.permissions.request({ permissions: ['tabCapture'] }, (granted) => {
       if (granted && tabId != null) {
-        chrome.tabs.reload(tabId);
-        window.close();
+        enabling.current = true;
+        void enableAudio(tabId, currentSettings()).then((res) => {
+          enabling.current = false;
+          if (res.ok) setStatus((s) => (s ? { ...s, active: true, needsPermission: false } : s));
+        });
       } else {
         setPermDismissed(true);
       }
@@ -153,17 +189,14 @@ export function Popup() {
     if (data) void update({ theme: theme === 'dark' ? 'light' : 'dark' });
   };
 
-  const currentSettings = () => ({ volume: vol / 100, eq });
-
   const onSaveSite = () => {
-    if (!state) return;
-    void saveRule({ kind: 'site', pattern: state.host, settings: currentSettings() });
+    if (!status) return;
+    void saveRule({ kind: 'site', pattern: status.host, settings: { volume: vol / 100, eq } });
     setUnsaved(false);
-    setToast({ message: `✓ ${state.host}`, variant: 'success', duration: 2000 });
+    setToast({ message: `✓ ${status.host}`, variant: 'success', duration: 2000 });
   };
 
   const openGroupModal = () => {
-    const groups = data?.groups ?? [];
     setSelectedGroupId(groups.length > 0 ? (groups[0]?.id ?? '__new__') : '__new__');
     setNewGroupName('');
     setNewGroupColor(DEFAULT_GROUP_COLOR);
@@ -171,9 +204,9 @@ export function Popup() {
   };
 
   const confirmGroupSave = async () => {
-    if (!state) return;
-    const settings = currentSettings();
-    const pattern = urlToPattern(state.host);
+    if (!status) return;
+    const settings = { volume: vol / 100, eq };
+    const pattern = urlToPattern(status.host);
 
     if (selectedGroupId === '__new__') {
       const trimmed = newGroupName.trim();
@@ -195,9 +228,8 @@ export function Popup() {
     window.close();
   };
 
-  const groups = data?.groups ?? [];
-  const drcOn = data?.drcEnabled ?? true;
-  const monoOn = data?.monoEnabled ?? false;
+  const badge: Badge = status?.active ? 'active' : status?.needsPermission ? 'permission' : 'ready';
+  const showPermBanner = status?.needsPermission && !permDismissed;
 
   return (
     <div className={`popup surface-root theme-${theme}`}>
@@ -206,15 +238,15 @@ export function Popup() {
           <span className="logo" />
           {t('brand')}
         </div>
-        {state && <BadgeView badge={state.badge} />}
+        {status && <BadgeView badge={badge} pulse={status.active && level > VU_THRESHOLD} />}
         <button className="icon-btn" onClick={toggleTheme} title={t('theme.toggle')} aria-label={t('theme.toggle')}>
           ◐
         </button>
         <button
           className="icon-btn power"
-          data-on={state?.power ? 'true' : 'false'}
+          data-on={status?.active ? 'true' : 'false'}
           onClick={togglePower}
-          title={state?.power ? t('power.on') : t('power.off')}
+          title={status?.active ? t('power.on') : t('power.off')}
           aria-label={t('power.on')}
         >
           ⏻
@@ -223,11 +255,10 @@ export function Popup() {
 
       {!ready && <div className="pop-unavailable">…</div>}
 
-      {ready && !state && (
+      {ready && !status && (
         <div className="pop-unavailable">
           <button className="refresh-btn" onClick={onRefresh} title={t('popup.refresh')}>
-            ↺
-            <span>{t('popup.refresh')}</span>
+            ↺<span>{t('popup.refresh')}</span>
           </button>
           <div className="pop-foot">
             <button onClick={() => chrome.runtime.openOptionsPage()}>{t('popup.openDashboard')}</button>
@@ -235,17 +266,17 @@ export function Popup() {
         </div>
       )}
 
-      {state && (
+      {status && (
         <>
           <div className="rule-pill">
             <span className="dot" style={{ background: 'var(--primary)' }} />
-            <span className="host">{state.host}</span>
-            <span className="src">{state.source === 'default' ? t('source.default') : t(`source.${state.source}`)}</span>
+            <span className="host">{status.host}</span>
+            <span className="src">
+              {status.source === 'default' ? t('source.default') : t(`source.${status.source}`)}
+            </span>
           </div>
 
-          {state.hasConflict && (
-            <div className="rule-conflict">⚠ {t('conflict.warning')}</div>
-          )}
+          {status.hasConflict && <div className="rule-conflict">⚠ {t('conflict.warning')}</div>}
 
           {unsaved && (
             <div className="unsaved-indicator">
@@ -254,7 +285,7 @@ export function Popup() {
             </div>
           )}
 
-          {state.needsCapturePermission && !permDismissed && (
+          {showPermBanner && (
             <div className="perm-banner">
               <div className="perm-text">{t('popup.permRequired')}</div>
               <div className="perm-actions">
@@ -268,31 +299,21 @@ export function Popup() {
             </div>
           )}
 
-          {state.captureLayer === 'bypass' && (
-            <div className="pop-note bypass">
-              <div>{t('popup.bypassMessage')}</div>
-              <div className="bypass-adv">
-                <span>{t('popup.bypassAdvHint')}</span>
-                <button className="bypass-adv-link" onClick={() => chrome.runtime.openOptionsPage()}>
-                  {t('popup.bypassAdvLink')} →
-                </button>
-              </div>
-            </div>
-          )}
-          {state.captureLayer === 'rtc' && (
-            <div className="pop-note webrtc">{t('popup.webrtcMessage')}</div>
-          )}
-
           <div className="vol-block">
             <div className="vol-top">
               <span className="vol-label">{t('popup.volume')}</span>
               <span className="vol-num mono">
-                {vol}<span className="pct">%</span>
+                {vol}
+                <span className="pct">%</span>
               </span>
             </div>
             <input
               className="vol-slider"
-              type="range" min={0} max={MAX_PCT} step={5} value={vol}
+              type="range"
+              min={0}
+              max={MAX_PCT}
+              step={5}
+              value={vol}
               onChange={(e) => onVolume(Number(e.target.value))}
             />
           </div>
@@ -305,7 +326,10 @@ export function Popup() {
                   <span className="eq-val mono">{(eq[i] ?? 0) > 0 ? `+${eq[i]}` : eq[i] ?? 0}</span>
                   <input
                     className="eq-slider"
-                    type="range" min={-12} max={12} step={1}
+                    type="range"
+                    min={-12}
+                    max={12}
+                    step={1}
                     value={eq[i] ?? 0}
                     onChange={(e) => onEqBand(i, Number(e.target.value))}
                     aria-label={`${freqLabel(hz)}Hz`}
@@ -323,13 +347,7 @@ export function Popup() {
                 <span className="pop-toggle-icon">≋</span>
                 <span className="pop-toggle-label pop-toggle-label--bold">{t('popup.drc')}</span>
               </div>
-              <div
-                className="toggle"
-                role="switch"
-                aria-checked={drcOn}
-                data-on={drcOn}
-                onClick={toggleDrc}
-              />
+              <div className="toggle" role="switch" aria-checked={drcOn} data-on={drcOn} onClick={toggleDrc} />
             </div>
             <div className="pop-toggle-divider" />
             <div className="pop-toggle-row pop-toggle-accent" data-on={monoOn}>
@@ -337,13 +355,7 @@ export function Popup() {
                 <span className="pop-toggle-icon">◐</span>
                 <span className="pop-toggle-label pop-toggle-label--bold">{t('popup.monoMode')}</span>
               </div>
-              <div
-                className="toggle"
-                role="switch"
-                aria-checked={monoOn}
-                data-on={monoOn}
-                onClick={toggleMono}
-              />
+              <div className="toggle" role="switch" aria-checked={monoOn} data-on={monoOn} onClick={toggleMono} />
             </div>
           </div>
 
@@ -367,14 +379,18 @@ export function Popup() {
         <div className="modal-overlay" onClick={() => setGroupModalOpen(false)}>
           <div className="modal grp-select-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>{t('groupSelect.title', { pattern: state?.host ?? '' })}</h3>
-              <button className="btn modal-x" onClick={() => setGroupModalOpen(false)}>×</button>
+              <h3>{t('groupSelect.title', { pattern: status?.host ?? '' })}</h3>
+              <button className="btn modal-x" onClick={() => setGroupModalOpen(false)}>
+                ×
+              </button>
             </div>
             <div className="grp-select-list">
               {groups.map((g) => (
                 <label key={g.id} className="grp-select-option">
                   <input
-                    type="radio" name="popup-grp" value={g.id}
+                    type="radio"
+                    name="popup-grp"
+                    value={g.id}
                     checked={selectedGroupId === g.id}
                     onChange={() => setSelectedGroupId(g.id)}
                   />
@@ -384,7 +400,9 @@ export function Popup() {
               ))}
               <label className="grp-select-option grp-select-new">
                 <input
-                  type="radio" name="popup-grp" value="__new__"
+                  type="radio"
+                  name="popup-grp"
+                  value="__new__"
                   checked={selectedGroupId === '__new__'}
                   onChange={() => setSelectedGroupId('__new__')}
                 />
@@ -403,7 +421,9 @@ export function Popup() {
               )}
             </div>
             <div className="modal-foot" style={{ gap: 8, display: 'flex', justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={() => setGroupModalOpen(false)}>{t('common.cancel')}</button>
+              <button className="btn" onClick={() => setGroupModalOpen(false)}>
+                {t('common.cancel')}
+              </button>
               <button
                 className="btn btn-primary"
                 disabled={selectedGroupId === '__new__' && !newGroupName.trim()}

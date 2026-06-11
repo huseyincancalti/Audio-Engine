@@ -162,7 +162,7 @@ body {
   flex: none;
 }
 
-/* Rozetler */
+/* Rozetler — v5: active (yeşil) / permission (amber) / ready (gri) */
 .badge-active {
   color: var(--green);
   border-color: color-mix(in srgb, var(--green) 40%, transparent);
@@ -170,32 +170,34 @@ body {
 .badge-active .dot {
   background: var(--green);
 }
-.badge-sleeping {
+.badge-ready {
   color: var(--gray);
 }
-.badge-sleeping .dot {
+.badge-ready .dot {
   background: var(--gray);
 }
-.badge-bypassed {
+.badge-permission {
   color: var(--amber);
   border-color: color-mix(in srgb, var(--amber) 40%, transparent);
 }
-.badge-bypassed .dot {
+.badge-permission .dot {
   background: var(--amber);
 }
-.badge-webrtc {
-  color: var(--primary);
-  border-color: var(--border-strong);
+
+/* VU nabzı — ses varken aktif rozetin noktası atar */
+.dot-pulse {
+  animation: ae-vu-pulse 0.6s ease-in-out infinite;
 }
-.badge-webrtc .dot {
-  background: var(--primary);
-}
-.badge-tab_capture {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
-}
-.badge-tab_capture .dot {
-  background: var(--green);
+@keyframes ae-vu-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.9);
+    opacity: 0.55;
+  }
 }
 
 /* Toggle */

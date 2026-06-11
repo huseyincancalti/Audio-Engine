@@ -1,10 +1,10 @@
-// build.js — IIFE bundling orkestratörü (ARCHITECTURE bölüm 2 & 12)
+// build.js — IIFE bundling orkestratörü (v5.0 offscreen + tabCapture)
 //
 //  1) Vite  → popup + options (React, standart build)
-//  2) esbuild → content + background + injected (her biri ayrı IIFE; `import` yok)
-//     - injected: MAIN world'de çalışır (WebRTC hook, ARCHITECTURE bölüm 5)
+//  2) esbuild → background + offscreen (her biri ayrı IIFE; `import` yok)
+//     - offscreen: tabCapture stream'ini Web Audio ile işler (CLAUDE.md)
 //  3) İkonları üret (dist/icons)
-//  4) manifest.json'u dist köküne kopyala
+//  4) offscreen.html + manifest.json'u dist'e kopyala
 //
 // Çıktı: dist/  → Chrome'a "unpacked extension" olarak yüklenebilir.
 
@@ -23,12 +23,11 @@ async function main() {
   console.log("→ [1/4] Vite build (popup + options)...");
   await viteBuild({ configFile: r("vite.config.ts"), logLevel: "warn" });
 
-  console.log("→ [2/4] esbuild (content + background + injected, IIFE)...");
+  console.log("→ [2/4] esbuild (background + offscreen, IIFE)...");
   await esbuild.build({
     entryPoints: {
-      content: r("src/content/index.ts"),
       background: r("src/background/index.ts"),
-      injected: r("src/content/injected.ts"),
+      "offscreen/offscreen": r("src/offscreen/offscreen.ts"),
     },
     bundle: true,
     format: "iife",
@@ -44,7 +43,12 @@ async function main() {
   console.log("→ [3/4] İkonlar üretiliyor...");
   generateIcons();
 
-  console.log("→ [4/4] manifest.json kopyalanıyor...");
+  console.log("→ [4/4] offscreen.html + manifest.json kopyalanıyor...");
+  const offscreenSrc = r("src/offscreen/offscreen.html");
+  if (!existsSync(offscreenSrc)) throw new Error("src/offscreen/offscreen.html bulunamadı");
+  mkdirSync(resolve(DIST, "offscreen"), { recursive: true });
+  copyFileSync(offscreenSrc, resolve(DIST, "offscreen", "offscreen.html"));
+
   const manifestSrc = r("public/manifest.json");
   if (!existsSync(manifestSrc)) throw new Error("public/manifest.json bulunamadı");
   copyFileSync(manifestSrc, resolve(DIST, "manifest.json"));

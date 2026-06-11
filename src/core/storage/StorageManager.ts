@@ -31,7 +31,6 @@ async function getAll(): Promise<StorageSchema> {
     groups: raw.groups ?? [],
     siteRules: raw.siteRules ?? [],
     confirmDelete: raw.confirmDelete ?? true,
-    advancedCapture: raw.advancedCapture ?? 'off',
     monoEnabled: raw.monoEnabled ?? false,
   };
 }
