@@ -22,14 +22,20 @@ declare global {
 if (!window._aeFullscreenWatcher) {
   window._aeFullscreenWatcher = true;
 
-  document.addEventListener('fullscreenchange', () => {
-    chrome.runtime
-      .sendMessage({
-        type: MessageType.FULLSCREEN_CHANGED,
-        payload: { fullscreen: document.fullscreenElement != null },
-      })
-      .catch(() => {
-        /* background'a ulaşılamadıysa (ör. eklenti yeniden yüklendi) yoksay */
-      });
-  });
+  function onFullscreenChange() {
+    try {
+      // chrome.runtime, eklenti yeniden yüklenince undefined olabilir.
+      if (!chrome?.runtime?.sendMessage) return;
+      void chrome.runtime
+        .sendMessage({
+          type: MessageType.FULLSCREEN_CHANGED,
+          payload: { fullscreen: document.fullscreenElement != null },
+        })
+        .catch(() => {});
+    } catch {
+      // Extension context invalidated → bir daha ateşlenmemesi için dinleyiciyi kaldır.
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+    }
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
 }
