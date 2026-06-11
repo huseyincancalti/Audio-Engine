@@ -272,15 +272,19 @@ body {
   box-shadow: 0 0 0 1px var(--border-strong);
 }
 
-/* Dikey EQ slider — writing-mode yöntemi (slider-vertical deprecated) */
+/* Dikey EQ slider — writing-mode yöntemi (slider-vertical deprecated).
+ * vol-slider ile aynı tarif: track'i input'un kendisi çizer, runnable-track'e
+ * boyut VERİLMEZ — aksi halde Chrome thumb'ı track'in sol kenarına hizalar ve
+ * top, çubuğun sağına kayar. Bu yolla thumb çapraz eksende otomatik ortalanır. */
 .eq-slider {
   -webkit-appearance: none;
   appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  width: 8px;
+  width: 4px;
   height: 56px;
-  background: transparent;
+  border-radius: 999px;
+  background: var(--track);
   cursor: pointer;
 }
 .eq-slider::-webkit-slider-thumb {
@@ -291,11 +295,6 @@ body {
   background: var(--primary);
   border: 2px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border-strong);
-}
-.eq-slider::-webkit-slider-runnable-track {
-  width: 4px;
-  background: var(--track);
-  border-radius: 999px;
 }
 
 /* ===========================================================================
