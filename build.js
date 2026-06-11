@@ -1,9 +1,10 @@
 // build.js — IIFE bundling orkestratörü (v5.0 offscreen + tabCapture)
 //
 //  1) Vite  → popup + options (React, standart build)
-//  2) esbuild → background + content + offscreen (her biri ayrı IIFE; `import` yok)
-//     - offscreen: tabCapture stream'ini Web Audio ile işler (CLAUDE.md)
-//     - content: yalnızca fullscreen senkronu (ses işlemez)
+//  2) esbuild → background + content + injected + offscreen (IIFE; `import` yok)
+//     - injected: MAIN world requestFullscreen interceptor (document_start)
+//     - content: ISOLATED world köprüsü + fullscreen senkronu (document_idle)
+//     - offscreen: tabCapture stream'ini Web Audio ile işler
 //  3) İkonları üret (dist/icons)
 //  4) offscreen.html + manifest.json'u dist'e kopyala
 //
@@ -29,6 +30,7 @@ async function main() {
     entryPoints: {
       background: r("src/background/index.ts"),
       content: r("src/content/index.ts"),
+      injected: r("src/content/injected.ts"),
       "offscreen/offscreen": r("src/offscreen/offscreen.ts"),
     },
     bundle: true,

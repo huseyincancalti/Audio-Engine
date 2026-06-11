@@ -109,17 +109,29 @@ function getMediaStreamId(targetTabId: number): Promise<string | null> {
   });
 }
 
-/** Fullscreen watcher'ı dinamik enjekte et.
+/** content.js'e capture durumunu bildir (background → content; EventBus değil). */
+function notifyCaptureState(tabId: number, active: boolean): void {
+  chrome.tabs
+    .sendMessage(tabId, { _ae: 'set_captured', capturing: active })
+    .catch(() => {});
+}
+
+/** content.js + injected.js'i dinamik enjekte et ve capture aktif olduğunu bildir.
  * Statik content_scripts sadece eklenti kurulduktan SONRA açılan sekmelere uygulanır.
- * Daha önce açık olan sekmelere (eklenti yüklenirken veya yeniden yüklenirken
- * açık kalan YouTube vb.) bu çağrı ile enjekte edilir.
- * content.js içindeki window flag, çift listener'ı önler. */
-function injectFullscreenWatcher(tabId: number): void {
-  chrome.scripting
-    .executeScript({ target: { tabId }, files: ['content.js'] })
-    .catch(() => {
-      /* chrome://, PDF, sandboxed iframe → sessizce yoksay */
-    });
+ * Daha önce açık olan sekmelere bu çağrı ile enjekte edilir.
+ * Her iki dosyadaki window flag, çift enjeksiyonu önler. */
+async function injectFullscreenWatcher(tabId: number): Promise<void> {
+  try {
+    await Promise.all([
+      chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }),
+      // injected.js MAIN world'de çalışır — requestFullscreen interceptor.
+      chrome.scripting.executeScript({ target: { tabId }, files: ['injected.js'], world: 'MAIN' }),
+    ]);
+  } catch {
+    /* chrome://, PDF, sandboxed iframe → sessizce yoksay */
+  }
+  // Scriptler yerleşti; content.js'e _aeCaptured = true bildir.
+  notifyCaptureState(tabId, true);
 }
 
 async function handleEnable(tabId: number, settings: CaptureSettings): Promise<EnableResponse> {
@@ -138,6 +150,8 @@ async function handleEnable(tabId: number, settings: CaptureSettings): Promise<E
 }
 
 function cleanupTab(tabId: number): void {
+  // Content script'e yakalama durduğunu bildir (PRE_FULLSCREEN köprüsünü devre dışı bırakır).
+  notifyCaptureState(tabId, false);
   capturing.delete(tabId);
   tabSettings.delete(tabId);
   userTuned.delete(tabId);
@@ -267,6 +281,18 @@ function restoreForcedFullscreen(tabId: number): void {
   }
 }
 
+// PRE_FULLSCREEN: injected.ts (MAIN world) requestFullscreen'i yakaladı;
+// content.js köprüsü aracılığıyla pencereyi önce fullscreen'e alıyoruz.
+// Bu tamamlanınca injected.ts orijinal requestFullscreen()'i çağırır — tek animasyon.
+EventBus.subscribe(MessageType.PRE_FULLSCREEN, async (_msg, sender) => {
+  const tabId = sender.tab?.id;
+  const windowId = sender.tab?.windowId;
+  if (tabId != null && windowId != null) {
+    await enterWindowFullscreen(tabId, windowId);
+  }
+  return { ok: true };
+});
+
 EventBus.subscribe(MessageType.FULLSCREEN_CHANGED, (msg, sender) => {
   const tabId = sender.tab?.id;
   const windowId = sender.tab?.windowId;
@@ -371,13 +397,15 @@ chrome.runtime.onInstalled.addListener(async () => {
   // sekmelere statik content_scripts enjekte edilmez. Fullscreen watcher'ı
   // tüm mevcut http/https sekmelerine tek seferlik inject et.
   const openTabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  // Halihazırda açık sekmelere her iki script'i de enjekte et.
+  // _aeFullscreenWatcher / _aeInjected flag'leri çift enjeksiyonu önler.
+  // set_captured gönderilmez (henüz capture yok).
   void Promise.allSettled(
     openTabs
       .filter((t) => t.id != null)
-      .map((t) =>
-        chrome.scripting
-          .executeScript({ target: { tabId: t.id! }, files: ['content.js'] })
-          .catch(() => {}),
-      ),
+      .flatMap((t) => [
+        chrome.scripting.executeScript({ target: { tabId: t.id! }, files: ['content.js'] }).catch(() => {}),
+        chrome.scripting.executeScript({ target: { tabId: t.id! }, files: ['injected.js'], world: 'MAIN' }).catch(() => {}),
+      ]),
   );
 });

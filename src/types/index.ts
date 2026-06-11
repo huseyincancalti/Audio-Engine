@@ -209,6 +209,9 @@ export enum MessageType {
 
   // Content → Background
   FULLSCREEN_CHANGED = 'FULLSCREEN_CHANGED',
+  /** MAIN world requestFullscreen interceptor'ı background'dan pencereyi
+   * önce fullscreen'e geçirmesini ister — böylece tek animasyon olur. */
+  PRE_FULLSCREEN = 'PRE_FULLSCREEN',
 }
 
 // --- Mesaj gövdeleri (discriminated union) ---
@@ -248,6 +251,11 @@ export interface MsgFullscreenChanged {
   payload: { fullscreen: boolean };
 }
 
+export interface MsgPreFullscreen {
+  type: MessageType.PRE_FULLSCREEN;
+  payload: Record<string, never>;
+}
+
 export type SaveRulePayload =
   | { kind: 'site'; pattern: string; settings: AudioSettings }
   | { kind: 'group'; groupId: string; pattern: string; settings: AudioSettings };
@@ -264,7 +272,8 @@ export type MessagePayload =
   | MsgGetTabStatus
   | MsgSaveRule
   | MsgCaptureEnded
-  | MsgFullscreenChanged;
+  | MsgFullscreenChanged
+  | MsgPreFullscreen;
 
 export type MessageOfType<T extends MessageType> = Extract<MessagePayload, { type: T }>;
 

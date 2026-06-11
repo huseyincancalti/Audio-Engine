@@ -1,15 +1,18 @@
 // src/content/index.ts
-// v5'te ses content script'te İŞLENMEZ — bu dosyanın tek görevi fullscreen senkronu.
+// ISOLATED world — ses burada işlenmez, yalnızca fullscreen senkronu yapılır.
 //
-// Chromium, tabCapture ile yakalanan sekmelerde element fullscreen isteğinin
-// tarayıcı penceresini fullscreen'e geçirmesine izin vermez: video sekme
-// alanını doldurur ama sekme şeridi / görev çubuğu ekranda kalır. Buradan
-// background'a haber verilir; sekme yakalanıyorsa pencere chrome.windows
-// API'siyle fullscreen'e alınır, çıkışta eski durumuna döndürülür.
+// İki mekanizma çalışır:
 //
-// Bu dosya hem statik content_scripts ile hem de chrome.scripting.executeScript
-// ile enjekte edilebilir. İkinci inject'te duplicate listener oluşmasını önlemek
-// için window flag kontrolü yapılır.
+// 1. MAIN world köprüsü (injected.ts ile):
+//    injected.ts, requestFullscreen()'i yakalar ve postMessage { _ae:'ae_fs_req' }
+//    gönderir. Biz bunu alır, sekme yakalanıyorsa background'a PRE_FULLSCREEN
+//    mesajı göndeririz. Background pencereyi önce fullscreen'e alıp cevap verir;
+//    sonra injected.ts orijinal requestFullscreen()'i çağırır → tek animasyon.
+//    Sekme yakalanmıyorsa anında ae_fs_go dönülür → sıfır gecikme.
+//
+// 2. fullscreenchange dinleyicisi:
+//    Element fullscreen değişince FULLSCREEN_CHANGED gönderilir; background
+//    window durumunu eşler ve çıkışta eski haline döner.
 
 import { MessageType } from '../types/index';
 
@@ -19,12 +22,45 @@ declare global {
   }
 }
 
+/** background'dan gelen { _ae:'set_captured' } mesajıyla güncellenir. */
+let _aeCaptured = false;
+
+chrome.runtime.onMessage.addListener((msg: unknown) => {
+  if (typeof msg === 'object' && msg !== null) {
+    const m = msg as Record<string, unknown>;
+    if (m['_ae'] === 'set_captured') _aeCaptured = Boolean(m['capturing']);
+  }
+});
+
 if (!window._aeFullscreenWatcher) {
   window._aeFullscreenWatcher = true;
 
+  // --- MAIN world köprüsü ---
+  window.addEventListener('message', (e: MessageEvent<{ _ae?: string }>) => {
+    if (e.source !== window || e.data?._ae !== 'ae_fs_req') return;
+
+    const reply = () => window.postMessage({ _ae: 'ae_fs_go' }, '*');
+
+    if (!_aeCaptured) {
+      // Yakalanmıyor → anında geç, gecikme yok.
+      reply();
+      return;
+    }
+
+    try {
+      if (!chrome?.runtime?.sendMessage) { reply(); return; }
+      void chrome.runtime
+        .sendMessage({ type: MessageType.PRE_FULLSCREEN, payload: {} })
+        .then(reply)
+        .catch(reply);
+    } catch {
+      reply();
+    }
+  });
+
+  // --- fullscreenchange dinleyicisi ---
   function onFullscreenChange() {
     try {
-      // chrome.runtime, eklenti yeniden yüklenince undefined olabilir.
       if (!chrome?.runtime?.sendMessage) return;
       void chrome.runtime
         .sendMessage({
@@ -33,7 +69,6 @@ if (!window._aeFullscreenWatcher) {
         })
         .catch(() => {});
     } catch {
-      // Extension context invalidated → bir daha ateşlenmemesi için dinleyiciyi kaldır.
       document.removeEventListener('fullscreenchange', onFullscreenChange);
     }
   }
