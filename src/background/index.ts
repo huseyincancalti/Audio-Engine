@@ -110,12 +110,10 @@ function getMediaStreamId(targetTabId: number): Promise<string | null> {
 }
 
 async function handleEnable(tabId: number, settings: CaptureSettings): Promise<EnableResponse> {
-  const hasPerm = await chrome.permissions.contains({ permissions: ['tabCapture'] });
-  if (!hasPerm) return { needsPermission: true };
-
   await ensureOffscreen();
   const streamId = await getMediaStreamId(tabId);
-  if (!streamId) return { needsPermission: true };
+  // streamId null ise sekme yakalanabilir değil (chrome://, PDF, eklenti sayfası vb.)
+  if (!streamId) return {};
 
   tabSettings.set(tabId, settings);
   capturing.add(tabId);
@@ -161,19 +159,14 @@ EventBus.subscribe(MessageType.UPDATE_SETTINGS, (msg) => {
 
 EventBus.subscribe(MessageType.GET_TAB_STATUS, async (msg) => {
   const { tabId } = msg.payload;
-  const [hasPerm, tab] = await Promise.all([
-    chrome.permissions.contains({ permissions: ['tabCapture'] }),
-    chrome.tabs.get(tabId).catch(() => null),
-  ]);
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
 
   const resolution = await resolveForUrl(tab?.url);
   const active = capturing.has(tabId);
-  // Yakalanan sekmede güncel ayarı tercih et; değilse kural çözümünü göster.
   const settings = (active && tabSettings.get(tabId)) || resolution.settings;
 
   const status: TabStatus = {
     active,
-    needsPermission: !hasPerm,
     volume: settings.volume,
     eq: [...settings.eq],
     drcEnabled: settings.drcEnabled,
@@ -279,8 +272,6 @@ async function tryAutoWake(tabId: number): Promise<void> {
   if (!tab?.url) return;
   const resolution = await resolveForUrl(tab.url);
   if (!resolution.hasRule) return;
-  const hasPerm = await chrome.permissions.contains({ permissions: ['tabCapture'] });
-  if (!hasPerm) return;
   await handleEnable(tabId, resolution.settings);
 }
 

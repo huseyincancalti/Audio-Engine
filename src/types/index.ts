@@ -177,8 +177,6 @@ export type Badge = 'active' | 'permission' | 'ready';
 export interface TabStatus {
   /** Bu sekme şu an yakalanıyor mu? */
   active: boolean;
-  /** tabCapture opsiyonel izni verilmemiş → popup banner gösterir. */
-  needsPermission: boolean;
   volume: number;
   eq: EQBand[];
   drcEnabled: boolean;
@@ -257,8 +255,6 @@ export type SaveRulePayload =
 /** ENABLE_AUDIO cevabı (background → popup). */
 export interface EnableResponse {
   ok?: true;
-  /** tabCapture izni yok → popup banner gösterir. */
-  needsPermission?: true;
 }
 
 export type MessagePayload =

@@ -4,8 +4,8 @@
   "version": "5.0.0",
   "minimum_chrome_version": "116",
   "description": "Pattern bazlı ses yükseltici ve ekolayzır. Sekme sesini kurallarla yönet (%1000, EQ, DRC, Mono) — offscreen + tabCapture motoru.",
-  "permissions": ["storage", "tabs", "activeTab", "offscreen"],
-  "optional_permissions": ["tabCapture"],
+  "permissions": ["storage", "tabs", "activeTab", "offscreen", "tabCapture", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },

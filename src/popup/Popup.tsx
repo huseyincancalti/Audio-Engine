@@ -56,7 +56,6 @@ export function Popup() {
   const [seeded, setSeeded] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
-  const [permDismissed, setPermDismissed] = useState(false);
   const [level, setLevel] = useState(0);
 
   // Save Group modal
@@ -118,7 +117,7 @@ export function Popup() {
   /** Yakalama aktifse offscreen'e debounce'lu canlı ayar gönder; değilse başlat. */
   const applyLive = (next: CaptureSettings) => {
     if (tabId == null) return;
-    latest.current = next; // düşen hızlı hareketler bile en güncel değeri bırakır
+    latest.current = next;
     if (status?.active) {
       if (updateTimer.current) window.clearTimeout(updateTimer.current);
       updateTimer.current = window.setTimeout(() => void updateSettings(tabId, next), 50);
@@ -128,11 +127,8 @@ export function Popup() {
     enabling.current = true;
     void enableAudio(tabId, next).then((res) => {
       enabling.current = false;
-      if (res.needsPermission) {
-        setStatus((s) => (s ? { ...s, needsPermission: true } : s));
-      } else if (res.ok) {
-        setStatus((s) => (s ? { ...s, active: true, needsPermission: false } : s));
-        // Başlatma sırasında düşmüş olabilecek en son değeri offscreen'e senkronla.
+      if (res.ok) {
+        setStatus((s) => (s ? { ...s, active: true } : s));
         if (latest.current) void updateSettings(tabId, latest.current);
       }
     });
@@ -169,20 +165,6 @@ export function Popup() {
   };
   const toggleMono = () => {
     if (data) void update({ monoEnabled: !data.monoEnabled });
-  };
-
-  const grantCapturePermission = () => {
-    chrome.permissions.request({ permissions: ['tabCapture'] }, (granted) => {
-      if (granted && tabId != null) {
-        enabling.current = true;
-        void enableAudio(tabId, currentSettings()).then((res) => {
-          enabling.current = false;
-          if (res.ok) setStatus((s) => (s ? { ...s, active: true, needsPermission: false } : s));
-        });
-      } else {
-        setPermDismissed(true);
-      }
-    });
   };
 
   const toggleTheme = () => {
@@ -228,8 +210,7 @@ export function Popup() {
     window.close();
   };
 
-  const badge: Badge = status?.active ? 'active' : status?.needsPermission ? 'permission' : 'ready';
-  const showPermBanner = status?.needsPermission && !permDismissed;
+  const badge: Badge = status?.active ? 'active' : 'ready';
 
   return (
     <div className={`popup surface-root theme-${theme}`}>
@@ -282,20 +263,6 @@ export function Popup() {
             <div className="unsaved-indicator">
               <span className="unsaved-dot" />
               {t('popup.unsaved')}
-            </div>
-          )}
-
-          {showPermBanner && (
-            <div className="perm-banner">
-              <div className="perm-text">{t('popup.permRequired')}</div>
-              <div className="perm-actions">
-                <button className="btn btn-primary perm-grant" onClick={grantCapturePermission}>
-                  {t('popup.permGrant')}
-                </button>
-                <button className="btn perm-ignore" onClick={() => setPermDismissed(true)}>
-                  {t('popup.permIgnore')}
-                </button>
-              </div>
             </div>
           )}
 
