@@ -109,6 +109,19 @@ function getMediaStreamId(targetTabId: number): Promise<string | null> {
   });
 }
 
+/** Fullscreen watcher'ı dinamik enjekte et.
+ * Statik content_scripts sadece eklenti kurulduktan SONRA açılan sekmelere uygulanır.
+ * Daha önce açık olan sekmelere (eklenti yüklenirken veya yeniden yüklenirken
+ * açık kalan YouTube vb.) bu çağrı ile enjekte edilir.
+ * content.js içindeki window flag, çift listener'ı önler. */
+function injectFullscreenWatcher(tabId: number): void {
+  chrome.scripting
+    .executeScript({ target: { tabId }, files: ['content.js'] })
+    .catch(() => {
+      /* chrome://, PDF, sandboxed iframe → sessizce yoksay */
+    });
+}
+
 async function handleEnable(tabId: number, settings: CaptureSettings): Promise<EnableResponse> {
   await ensureOffscreen();
   const streamId = await getMediaStreamId(tabId);
@@ -118,6 +131,9 @@ async function handleEnable(tabId: number, settings: CaptureSettings): Promise<E
   tabSettings.set(tabId, settings);
   capturing.add(tabId);
   sendToOffscreen({ target: OFFSCREEN_TARGET, type: 'START_CAPTURE', tabId, streamId, settings });
+  // Sekme zaten açıksa (statik content script enjekte edilmemiş olabilir) fullscreen
+  // watcher'ını dinamik enjekte et.
+  injectFullscreenWatcher(tabId);
   return { ok: true };
 }
 
@@ -350,4 +366,18 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (!(key in existing)) patch[key] = value;
   }
   if (Object.keys(patch).length > 0) await chrome.storage.local.set(patch);
+
+  // Eklenti yüklendiğinde / yeniden yüklendiğinde halihazırda açık olan
+  // sekmelere statik content_scripts enjekte edilmez. Fullscreen watcher'ı
+  // tüm mevcut http/https sekmelerine tek seferlik inject et.
+  const openTabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  void Promise.allSettled(
+    openTabs
+      .filter((t) => t.id != null)
+      .map((t) =>
+        chrome.scripting
+          .executeScript({ target: { tabId: t.id! }, files: ['content.js'] })
+          .catch(() => {}),
+      ),
+  );
 });
