@@ -16,6 +16,7 @@ import {
   type OffscreenMsg,
   type TabStatus,
   type RuleSource,
+  type IsCapturingResponse,
 } from '../types/index';
 
 // ---------------------------------------------------------------------------
@@ -201,6 +202,74 @@ EventBus.subscribe(MessageType.SAVE_RULE, async (msg) => {
 });
 
 // ---------------------------------------------------------------------------
+// Fullscreen senkronu — Chromium, yakalanan sekmede element fullscreen'in
+// pencereyi fullscreen'e geçirmesine izin vermez (video büyür ama sekme şeridi
+// ve görev çubuğu kalır). Content script fullscreenchange'i bildirir; sekme
+// yakalanıyorsa pencereyi chrome.windows ile biz fullscreen'e alır, çıkışta
+// önceki durumuna geri döndürürüz. Yakalanmayan sekmede doğal akışa karışmayız.
+// ---------------------------------------------------------------------------
+
+type WindowState = NonNullable<chrome.windows.Window['state']>;
+
+/** Bizim fullscreen'e aldığımız pencereler: windowId → tetikleyen sekme + önceki durum. */
+const forcedFullscreen = new Map<number, { tabId: number; prevState: WindowState }>();
+
+/** SW yeniden başlamış olabilir (capturing seti boşalır) → gerçek durumu offscreen'e sor. */
+async function isTabCaptured(tabId: number): Promise<boolean> {
+  if (capturing.has(tabId)) return true;
+  if (!(await chrome.offscreen.hasDocument())) return false;
+  try {
+    const res = (await chrome.runtime.sendMessage({
+      target: OFFSCREEN_TARGET,
+      type: 'IS_CAPTURING',
+      tabId,
+    } satisfies OffscreenMsg)) as IsCapturingResponse | undefined;
+    return res?.capturing === true;
+  } catch {
+    return false;
+  }
+}
+
+async function enterWindowFullscreen(tabId: number, windowId: number): Promise<void> {
+  if (forcedFullscreen.has(windowId)) return;
+  if (!(await isTabCaptured(tabId))) return;
+  const win = await chrome.windows.get(windowId).catch(() => null);
+  if (!win || win.state === 'fullscreen') return; // zaten fullscreen (ör. F11)
+  forcedFullscreen.set(windowId, { tabId, prevState: win.state ?? 'normal' });
+  await chrome.windows.update(windowId, { state: 'fullscreen' }).catch(() => {
+    forcedFullscreen.delete(windowId);
+  });
+}
+
+async function exitWindowFullscreen(windowId: number): Promise<void> {
+  const entry = forcedFullscreen.get(windowId);
+  if (!entry) return; // fullscreen'i biz başlatmadık → karışma
+  forcedFullscreen.delete(windowId);
+  const win = await chrome.windows.get(windowId).catch(() => null);
+  if (win?.state === 'fullscreen') {
+    await chrome.windows.update(windowId, { state: entry.prevState }).catch(() => {});
+  }
+}
+
+/** Sekme kapandı / navigasyon oldu → o sekmenin zorladığı fullscreen'i geri al. */
+function restoreForcedFullscreen(tabId: number): void {
+  for (const [windowId, entry] of forcedFullscreen) {
+    if (entry.tabId === tabId) void exitWindowFullscreen(windowId);
+  }
+}
+
+EventBus.subscribe(MessageType.FULLSCREEN_CHANGED, (msg, sender) => {
+  const tabId = sender.tab?.id;
+  const windowId = sender.tab?.windowId;
+  if (tabId == null || windowId == null) return;
+  if (msg.payload.fullscreen) {
+    void enterWindowFullscreen(tabId, windowId);
+  } else {
+    void exitWindowFullscreen(windowId);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Auto-wake — kayıtlı kuralı olan sekme aktifleşince / yüklenince sessizce başlat.
 // ---------------------------------------------------------------------------
 
@@ -220,12 +289,16 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // Navigasyon element fullscreen'i doğal olarak bitirir; zorladığımız pencere
+  // fullscreen'i de geri al (eski document'in exit haberi güvenilir değildir).
+  if (changeInfo.status === 'loading') restoreForcedFullscreen(tabId);
   if (changeInfo.status !== 'complete') return;
   void tryAutoWake(tabId);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   stopTab(tabId);
+  restoreForcedFullscreen(tabId);
 });
 
 // ---------------------------------------------------------------------------

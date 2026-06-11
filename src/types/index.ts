@@ -208,6 +208,9 @@ export enum MessageType {
 
   // Offscreen → Background
   CAPTURE_ENDED = 'CAPTURE_ENDED',
+
+  // Content → Background
+  FULLSCREEN_CHANGED = 'FULLSCREEN_CHANGED',
 }
 
 // --- Mesaj gövdeleri (discriminated union) ---
@@ -242,6 +245,11 @@ export interface MsgCaptureEnded {
   payload: { tabId: number };
 }
 
+export interface MsgFullscreenChanged {
+  type: MessageType.FULLSCREEN_CHANGED;
+  payload: { fullscreen: boolean };
+}
+
 export type SaveRulePayload =
   | { kind: 'site'; pattern: string; settings: AudioSettings }
   | { kind: 'group'; groupId: string; pattern: string; settings: AudioSettings };
@@ -259,7 +267,8 @@ export type MessagePayload =
   | MsgUpdateSettings
   | MsgGetTabStatus
   | MsgSaveRule
-  | MsgCaptureEnded;
+  | MsgCaptureEnded
+  | MsgFullscreenChanged;
 
 export type MessageOfType<T extends MessageType> = Extract<MessagePayload, { type: T }>;
 
@@ -275,9 +284,15 @@ export type OffscreenMsg =
   | { target: typeof OFFSCREEN_TARGET; type: 'START_CAPTURE'; tabId: number; streamId: string; settings: CaptureSettings }
   | { target: typeof OFFSCREEN_TARGET; type: 'UPDATE_SETTINGS'; tabId: number; settings: CaptureSettings }
   | { target: typeof OFFSCREEN_TARGET; type: 'STOP_CAPTURE'; tabId: number }
-  | { target: typeof OFFSCREEN_TARGET; type: 'GET_LEVEL'; tabId: number };
+  | { target: typeof OFFSCREEN_TARGET; type: 'GET_LEVEL'; tabId: number }
+  | { target: typeof OFFSCREEN_TARGET; type: 'IS_CAPTURING'; tabId: number };
 
 /** GET_LEVEL cevabı (offscreen → popup). */
 export interface LevelResponse {
   level: number;
+}
+
+/** IS_CAPTURING cevabı (offscreen → background). */
+export interface IsCapturingResponse {
+  capturing: boolean;
 }

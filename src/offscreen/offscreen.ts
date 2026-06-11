@@ -13,6 +13,7 @@ import {
   type CaptureSettings,
   type OffscreenMsg,
   type LevelResponse,
+  type IsCapturingResponse,
 } from '../types/index';
 
 interface TabEngine {
@@ -53,6 +54,13 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
       const res: LevelResponse = { level: getLevel(msg.tabId!) };
       sendResponse(res);
       return true; // async kanal — sendResponse kullandık
+    }
+    case 'IS_CAPTURING': {
+      // Background SW yeniden başladığında RAM'deki yakalama seti boşalır;
+      // gerçek durumu (engine var mı?) buradan sorar.
+      const res: IsCapturingResponse = { capturing: engines.has(msg.tabId!) };
+      sendResponse(res);
+      return true;
     }
     default:
       return false;
