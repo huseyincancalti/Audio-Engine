@@ -1,146 +1,207 @@
-# Audio Engine 🎚️ (v5)
+# Audio Engine
 
-Pattern bazlı **ses yükseltici + ekolayzır + DRC** Chrome eklentisi (Manifest V3). Sekmedeki
-sesi kurallarla yönetir: `*.youtube.com → %150`, `*.netflix.com → %57` gibi. Kayıtlı kural
-olan siteye gidince **popup açmadan otomatik uygulanır** (auto-wake).
+**Your browser's audio, under your control.**
 
-v5'te ses yakalama katmanı **tamamen yeniden yazıldı**: artık `chrome.tabCapture` +
-**offscreen document** kullanılıyor (endüstri standardı — Volume Master vb.). tabCapture
-sekmenin **çıkış miksini** yakaladığı için CORS/tainted sorunu yoktur ve **her sitede**
-(TikTok, Netflix, Meet, hdfilmcehennemi…) çalışır — sadece YouTube değil.
+Boost volume beyond 100%, shape sound with a 5-band EQ, tame loud ads with a compressor — and do it automatically, per site, without touching a slider twice.
 
-> Tasarım kararlarının arka planı için `ARCHITECTURE.md`. Yakalama mimarisi `CLAUDE.md`
-> v5.0 spesifikasyonunu uygular.
+[![Chrome](https://img.shields.io/badge/Chrome-MV3-4285F4?logo=googlechrome&logoColor=white)](https://github.com/huseyincancalti/Audio-Engine/releases)
+[![Firefox](https://img.shields.io/badge/Firefox-MV2-FF7139?logo=firefox&logoColor=white)](https://github.com/huseyincancalti/Audio-Engine/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
-## v5'te yeni neler var?
+## What it does
 
-- 🎯 **Offscreen + tabCapture motoru** — ses işleme tek bir offscreen document'te,
-  sekme başına `Map<tabId, TabEngine>` ile yapılır. Background orkestra şefidir; popup
-  ince bir görünümdür.
-- 🌐 **Her sitede çalışır** — cross-origin `<video>` (TikTok/Netflix) artık CORS'a takılmaz.
-- 🔊 **Ses %0–%1000** (`MAX_GAIN = 10`), patlama korumalı yumuşak gain rampası.
-- 🛡️ **DRC** ve 🎧 **Mono** — global anahtarlar; aktif yakalamalarda zincir anında yeniden kurulur.
-- ⚡ **Auto-Wake** — kayıtlı kuralı olan sekme aktifleşince/yüklenince background sessizce başlatır.
-- 🔐 **Tek seferlik izin** — `tabCapture` opsiyonel izindir; kullanıcı bir ses aksiyonu
-  yapınca (slider oynatma / kaydet) bir kez istenir, içerik scripti yoktur.
-- 📊 **VU metre** — popup açıkken offscreen'den 200ms'de bir seviye okunur; ses varken rozet nabız atar.
-- 🌍 **i18n (TR/EN)**, 🎨 **Tema** (Dark/Light), 🔒 **Auth kancaları** (`TierGate`) korunur.
+Audio Engine sits quietly in your browser. Set a rule once — `*.youtube.com → 150%` — and it applies every time you visit. No popup required. No babysitting.
 
-### Korunan davranışlar
-- 🎯 Pattern + spesifiklik: `music.youtube.com` (exact) > `*.youtube.com` > `*.com`.
-- 👥 Sınırsız grup, sınırsız pattern; site/grup kuralları + global varsayılan.
-- 🔒 Sekme izolasyonu (her sekme kendi AudioContext'i); popup değer **tutmaz**, durumu
-  background'dan çeker.
+- **Volume 0–1000%** with smooth ramping (no pops, no clipping)
+- **5-band EQ** — 60 Hz · 250 Hz · 1 kHz · 4 kHz · 12 kHz, ±12 dB each
+- **Dynamic Range Compression** — loud ads quieter, quiet dialogue louder
+- **Mono mix** — fold stereo to mono with one toggle
+- **Rule engine** — domain-based rules, exact match > subdomain > wildcard, auto-applied
+- **Auto-wake** — rules fire when you open a tab, no popup needed
+- **Live VU meter** — pulsing badge and level bar in the popup while audio plays
 
 ---
 
-## Kurulum (geliştirici)
+## Browser Support
 
-Gereksinim: **Node.js 18+**.
+| Browser | Version | Status |
+|---|---|---|
+| Chrome | 116+ | Full — `tabCapture` + offscreen, works on every site including Netflix, TikTok |
+| Edge / Brave | 116+ | Full — same as Chrome |
+| Firefox | 140+ | Full on most sites — Web Audio engine, DRM content plays normally without boost |
+| LibreWolf | 140+ | Full — same as Firefox, see install note below |
+
+---
+
+## Install
+
+### Chrome, Edge, Brave
+
+> A Chrome Web Store listing is coming. Until then, load it as an unpacked extension.
+
+1. Go to the [Releases page](https://github.com/huseyincancalti/Audio-Engine/releases) and download **`audio-engine-chrome.zip`**
+2. Unzip the file anywhere
+3. Open `chrome://extensions` → enable **Developer mode** (toggle, top right)
+4. Click **Load unpacked** → select the unzipped folder
+5. Pin the extension icon to your toolbar
+
+Done. The extension survives browser restarts.
+
+---
+
+### Firefox
+
+> A Firefox Add-ons (AMO) listing is coming. Until then, install the `.xpi` directly.
+
+1. Go to the [Releases page](https://github.com/huseyincancalti/Audio-Engine/releases) and download **`audio-engine-firefox.xpi`**
+2. Open `about:addons` → click the **⚙️ gear icon** → **Install Add-on From File**
+3. Select the `.xpi` → confirm the install
+
+The extension stays installed across restarts.
+
+---
+
+### LibreWolf
+
+LibreWolf requires one extra step (Firefox doesn't):
+
+1. Go to `about:config` → search for **`xpinstall.signatures.required`** → set to **`false`**
+2. Then follow the Firefox steps above
+
+You only need to do this once.
+
+---
+
+## How to use
+
+1. Visit a site with audio — YouTube, Spotify, a podcast, anything
+2. Click the **Audio Engine** icon in your toolbar
+3. Move the volume slider — audio responds instantly
+4. Hit **Save Rule** to lock in the setting for this domain
+5. Done — next time you open that site, it applies automatically
+
+The power button toggles capture for the current tab. The EQ and DRC panels are in the same popup. Options (rule manager, groups, theme) are in the dedicated settings page via the gear icon.
+
+---
+
+## Known Limitations
+
+| Situation | Chrome | Firefox |
+|---|---|---|
+| DRM content (Netflix, Disney+, Spotify) | Works | Video plays normally, boost not applied |
+| Cross-origin media without CORS headers | Works | Audio plays normally, boost not applied |
+| `chrome://` and extension pages | No | No |
+| Ads inside iframes | No | No |
+
+Firefox's limitations are architectural — `tabCapture` was never implemented in Firefox, so the engine hooks directly into `<video>`/`<audio>` elements on the page instead. DRM-locked streams can't be touched this way without silencing them permanently, so they're intentionally skipped.
+
+---
+
+## Building from source
 
 ```bash
+# Clone
+git clone https://github.com/huseyincancalti/Audio-Engine.git
+cd Audio-Engine
+
+# Chrome build
 npm install
-npm run build      # dist/ üretir
-npm run typecheck  # tsc --noEmit
+npm run build       # → dist/
+npm run typecheck   # optional, type check only
+
+# Firefox build
+cd audio-engine-firefox
+npm install
+npm run build       # → audio-engine-firefox/dist/
 ```
 
-`npm run build` (`build.js` orkestratörü) şu çıktıları üretir:
+**Load in Chrome:** `chrome://extensions` → Developer mode → Load unpacked → select `dist/`
 
-| # | Bundle | Araç | Çıktı |
-|---|--------|------|-------|
-| 1 | Popup (React) | Vite | `dist/assets/*` + `dist/src/popup/index.html` |
-| 2 | Options (React) | Vite | `dist/assets/*` + `dist/src/options/index.html` |
-| 3 | `background/index.ts` | esbuild IIFE | `dist/background.js` |
-| 4 | `offscreen/offscreen.ts` | esbuild IIFE | `dist/offscreen/offscreen.js` |
-
-```
-dist/
-├── manifest.json
-├── background.js          # service worker / orkestra şefi (IIFE)
-├── offscreen/
-│   ├── offscreen.html
-│   └── offscreen.js       # Web Audio motoru, sekme başına (IIFE)
-├── icons/                 # 16 / 48 / 128 px
-├── assets/                # React popup + options bundle'ları
-└── src/
-    ├── popup/index.html
-    └── options/index.html
-```
-
-### Chrome'a yükleme
-1. `chrome://extensions` aç → sağ üstten **Developer mode**.
-2. **Load unpacked** → projedeki **`dist/`** klasörünü seç.
-3. Kod değiştirince `npm run build` + eklentiyi **Reload**.
+**Load in Firefox:** `about:debugging` → This Firefox → Load Temporary Add-on → select `audio-engine-firefox/dist/manifest.json`
 
 ---
 
-## Mimari özet
+## Architecture
+
+### Chrome (Manifest V3)
 
 ```
-┌──────────┐   komut     ┌────────────┐  target:'offscreen' ┌───────────────────┐
-│  Popup   │ ──────────► │ Background │ ──────────────────► │ Offscreen Document │
-│ (React)  │  ENABLE /   │  (worker)  │   START / UPDATE /  │  (Web Audio motoru)│
-└──────────┘  DISABLE /  └────────────┘   STOP_CAPTURE      └───────────────────┘
-     │        UPDATE /          │                                    │
-     │        GET_TAB_STATUS    │  getMediaStreamId(tabId)           │ getUserMedia(tab)
-     └──── GET_LEVEL ───────────┴──────────────────────────────────►│ gain+EQ+DRC+mono
-                            ▲ CAPTURE_ENDED (stream bitince)         │ → destination
+┌──────────┐   ENABLE/DISABLE   ┌────────────┐  START_CAPTURE   ┌────────────────────┐
+│  Popup   │ ─────────────────► │ Background │ ───────────────► │ Offscreen Document  │
+│ (React)  │   UPDATE/STATUS    │  (worker)  │  UPDATE_SETTINGS │  (Web Audio engine) │
+└──────────┘                    └────────────┘                   └────────────────────┘
+                                      │                                    │
+                                      │  getMediaStreamId(tabId)           │ tabCapture stream
+                                      └──────────────────────────────────► │ → EQ → Gain → DRC
+                                                                            │ → Analyser → dest
 ```
 
-- **Background**: izin/streamId, offscreen yaşam döngüsü, auto-wake, kural çözümü, sekme
-  başına RAM ayarları (`Map<tabId, CaptureSettings>`).
-- **Offscreen**: her sekme için tabCapture stream'ini Web Audio ile işler; mono/DRC değişince
-  zinciri yeniden bağlar; VU seviyesi döndürür.
-- **Popup**: saf görünüm; güç düğmesi = bu sekme için yakalamayı aç/kapat.
+- **Background service worker**: orchestrates tab capture, resolves rules, manages offscreen lifetime
+- **Offscreen document**: one per active capture; processes audio via Web Audio API; returns VU levels
+- **Content scripts**: fullscreen sync (MAIN world intercept + ISOLATED world bridge)
+- **Popup**: thin view; reads state from background, writes commands back
 
-### Ses zinciri (offscreen, sekme başına)
+**Audio chain (per tab):**
 ```
-tabCapture stream
-  → BiquadFilter ×5 (EQ: 60/250/1k/4k/12k Hz, ±12dB)
-  → GainNode (0–10x / %1000)
-  → [mono?  splitter→merger]
-  → [drc?   DynamicsCompressor: -24dB / 30 / 12 / 3ms / 250ms]
-  → AnalyserNode (VU)
-  → destination
+tabCapture stream → BiquadFilter ×5 (EQ) → GainNode (0–10×) → [ChannelSplitter/Merger (mono?)]
+  → DynamicsCompressor → AnalyserNode (VU) → destination
 ```
-
-### Öncelik sırası (precedence)
-```
-1. Tek seferlik (kullanıcı elle ayarladı; RAM, kaydedilmez)
-2. Exact match     (music.youtube.com)
-3. Subdomain *.    (*.youtube.com)
-4. Geniş wildcard  (*.com / grup pattern'i)
-5. Global varsayılan
-```
-2–4 arası: `score = (literal karakter) − (wildcard × 10)`; yüksek skor kazanır, eşitlikte
-exact > site > grup.
 
 ---
 
-## Manuel test senaryoları
-1. **İzin** — Bir sekmede slider'ı oynat → tek seferlik `tabCapture` izni istenir → ver.
-2. **YouTube** %500 → çalışmalı.
-3. **TikTok** ses değişimi → çalışmalı (asıl cross-origin testi).
-4. **Netflix / Google Meet / hdfilmcehennemi** → çalışmalı.
-5. **Mono** toggle → ses tek kanala düşmeli.
-6. **VU metre** → ses varken rozet nabız atmalı.
-7. **İzolasyon** — İki sekme; biri %200, diğeri %100 → birbirini etkilemez.
-8. **Auto-wake** — Kayıtlı kuralı olan siteyi yeni sekmede aç → popup açmadan uygulanmalı.
+### Firefox (Manifest V2)
+
+```
+┌──────────┐  START_CAPTURE   ┌────────────┐  sendMessage  ┌──────────────────────┐
+│  Popup   │ ───────────────► │ Background │ ────────────► │   Content Script      │
+│ (React)  │  UPDATE/STOP     │ (persistent│               │  (audio engine lives  │
+└──────────┘                  │  bg page)  │               │   here, per tab)      │
+                              └────────────┘               └──────────────────────┘
+```
+
+- **Background page** (persistent, never sleeps): orchestrates, resolves rules, pings content scripts
+- **Content script**: runs the full Web Audio engine inside the page; hooks `<video>`/`<audio>` elements
+
+**Audio chain:**
+```
+<video>/<audio> element → createMediaElementSource (or MediaStreamSource for WebRTC)
+  → BiquadFilter ×5 (EQ) → GainNode → [mono?] → DynamicsCompressor → AnalyserNode → destination
+```
+
+**Guards:**
+- **DRM guard** — elements with `mediaKeys` set (Netflix EME) are skipped; hooking them would silence them permanently
+- **CORS taint guard** — cross-origin elements without CORS headers are skipped for the same reason
+- **Neutral passthrough** — "stop" sets gain to 1.0, EQ to 0 dB, DRC to transparent; the Web Audio graph stays wired but audio passes through unchanged
 
 ---
 
-## Bilinen sınırlar
-- tabCapture yalnızca **normal web sekmelerinde** çalışır; `chrome://`, Web Store ve eklenti
-  sayfaları yakalanamaz.
-- İzin verilmeden ses işlenmez — bu bilinçli bir tasarımdır (offscreen + tabCapture gereği).
-- Çeviri katkısı: `src/i18n/en.json` → çevir → PR aç **veya** huseyincancalti@gmail.com.
+### Rule resolution (both browsers)
+
+```
+Priority (highest → lowest):
+  1. One-off override (user moved slider manually, not saved)
+  2. Exact match       music.youtube.com
+  3. Subdomain match   *.youtube.com
+  4. Wide wildcard     *.com  /  group pattern
+  5. Global default
+
+Tie-breaking: score = len(literal chars) − (wildcard count × 10), higher wins
+```
 
 ---
 
-## Komutlar
-| Komut | Açıklama |
-|---|---|
-| `npm run build` | `dist/` üretir (Vite + esbuild ×2 + ikon + offscreen.html + manifest). |
-| `npm run typecheck` | `tsc --noEmit` ile tip kontrolü. |
+## Why this exists
+
+Most volume extensions either boost the entire OS (affecting everything) or cap out at 200%. Audio Engine works at the tab level — isolated, per site, with the audio chain you'd expect from a DAW, not a toy slider. The rule engine means you set it once and forget it.
+
+The Firefox port was built because `tabCapture` was never implemented in Firefox ([Bugzilla #1391223](https://bugzilla.mozilla.org/show_bug.cgi?id=1391223), open since 2017). Rather than give up, the engine was redesigned from scratch for that constraint.
+
+---
+
+<br>
+
+<p align="center">
+  Made with strong coffee by <a href="https://karakedidub.com">karakedidub</a>
+</p>
