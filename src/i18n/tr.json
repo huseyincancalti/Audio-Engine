@@ -2,8 +2,13 @@
   "brand": "Audio Engine",
 
   "badge.active": "Aktif",
+  "badge.attention": "Dikkat",
   "badge.permission": "İzin Gerekli",
   "badge.ready": "Hazır",
+
+  "feedback.restricted": "Bu sayfa yükseltilemiyor — tarayıcı sistem sayfası, mağaza veya PDF. Normal web sayfalarında çalışır.",
+  "feedback.no_audio": "Ses algılanmıyor. Bu sekmede gerçekten bir şey oynatılıyor mu?",
+  "feedback.capture_failed": "Bu sekmede ses yakalama başlatılamadı. Sayfayı yenilemeyi deneyin.",
 
   "popup.volume": "Ses",
   "popup.eq": "Ekolayzır",

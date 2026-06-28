@@ -167,8 +167,18 @@ export const DEFAULT_STORAGE: StorageSchema = {
 /** Çözülen ayarın hangi katmandan geldiği. */
 export type RuleSource = 'one-off' | 'site' | 'group' | 'default';
 
-/** Popup rozeti. */
-export type Badge = 'active' | 'permission' | 'ready';
+/** Popup rozeti. attention = bir şey ilgi gerektiriyor (yakalanamaz sayfa, ses yok vb.). */
+export type Badge = 'active' | 'attention' | 'permission' | 'ready';
+
+/**
+ * Popup'ta gösterilecek kullanıcı feedback durumu (Chrome).
+ *  - active         → yakalanıyor ve ses akıyor
+ *  - no_audio       → yakalanıyor ama ses gelmiyor (oynatma yok?)
+ *  - restricted     → bu sayfa yakalanamaz (chrome://, mağaza, PDF, eklenti sayfası)
+ *  - capture_failed → sayfa uygundu ama yakalama başlatılamadı
+ *  - idle           → kapalı
+ */
+export type EngineState = 'active' | 'no_audio' | 'restricted' | 'capture_failed' | 'idle';
 
 /**
  * Background'ın popup'a döndürdüğü tek doğru durum.
@@ -188,6 +198,8 @@ export interface TabStatus {
   hasConflict: boolean;
   /** Mevcut sekmenin host'u (popup "Site Kaydet" için kullanır). */
   host: string;
+  /** Bu sayfa tabCapture ile yakalanabilir mi? (chrome://, mağaza, PDF → false) */
+  capturable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +272,11 @@ export type SaveRulePayload =
   | { kind: 'site'; pattern: string; settings: AudioSettings }
   | { kind: 'group'; groupId: string; pattern: string; settings: AudioSettings };
 
-/** ENABLE_AUDIO cevabı (background → popup). */
+/** ENABLE_AUDIO cevabı (background → popup). Başarısızsa neden bildirilir. */
 export interface EnableResponse {
   ok?: true;
+  /** restricted = yakalanamaz sayfa, failed = uygun sayfada yakalama başlatılamadı. */
+  reason?: 'restricted' | 'failed';
 }
 
 export type MessagePayload =

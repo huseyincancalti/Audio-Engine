@@ -39,6 +39,23 @@ function hostFromUrl(url: string | undefined): string {
   }
 }
 
+/** Sayfa tabCapture ile yakalanabilir mi? http/https dışındaki şemalar
+ *  (chrome://, edge://, about:, eklenti sayfaları, view-source) ve Web Store
+ *  yakalanamaz; popup bunu kullanıcıya net söyler. */
+function isCapturableUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  // Chrome Web Store sayfaları eklenti tarafından yakalanamaz.
+  if (u.hostname === 'chromewebstore.google.com' || u.hostname === 'chrome.google.com') return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Offscreen document yönetimi
 // ---------------------------------------------------------------------------
@@ -137,8 +154,12 @@ async function injectFullscreenWatcher(tabId: number): Promise<void> {
 async function handleEnable(tabId: number, settings: CaptureSettings): Promise<EnableResponse> {
   await ensureOffscreen();
   const streamId = await getMediaStreamId(tabId);
-  // streamId null ise sekme yakalanabilir değil (chrome://, PDF, eklenti sayfası vb.)
-  if (!streamId) return {};
+  // streamId null ise yakalama başlamadı. Sebebi ayırt et: yakalanamaz sayfa mı
+  // (chrome://, mağaza, PDF) yoksa uygun sayfada beklenmedik hata mı?
+  if (!streamId) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    return { reason: isCapturableUrl(tab?.url) ? 'failed' : 'restricted' };
+  }
 
   tabSettings.set(tabId, settings);
   capturing.add(tabId);
@@ -205,6 +226,7 @@ EventBus.subscribe(MessageType.GET_TAB_STATUS, async (msg) => {
     sourceLabel: active && userTuned.has(tabId) ? hostFromUrl(tab?.url) : resolution.sourceLabel,
     hasConflict: resolution.hasConflict,
     host: hostFromUrl(tab?.url),
+    capturable: isCapturableUrl(tab?.url),
   };
   return status;
 });

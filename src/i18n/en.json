@@ -2,8 +2,13 @@
   "brand": "Audio Engine",
 
   "badge.active": "Active",
+  "badge.attention": "Check",
   "badge.permission": "Permission Required",
   "badge.ready": "Ready",
+
+  "feedback.restricted": "This page can't be boosted — it's a browser system page, the Web Store, or a PDF. It works on normal websites.",
+  "feedback.no_audio": "No sound detected. Is something actually playing on this tab?",
+  "feedback.capture_failed": "Couldn't start audio capture on this tab. Try reloading the page.",
 
   "popup.volume": "Volume",
   "popup.eq": "Equalizer",

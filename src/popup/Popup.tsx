@@ -24,11 +24,13 @@ import {
   type CaptureSettings,
   type TabStatus,
   type Badge,
+  type EngineState,
 } from '../types/index';
 import { Toast, type ToastData } from '../components/Toast';
 
 const MAX_PCT = MAX_GAIN * 100;
 const VU_THRESHOLD = 1; // bu seviyenin üzerinde rozet nabız atar
+const NO_AUDIO_GRACE = 2500; // aktifken bu kadar süre sessizse "ses yok" uyarısı
 
 function freqLabel(hz: number): string {
   return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
@@ -57,6 +59,9 @@ export function Popup() {
   const [unsaved, setUnsaved] = useState(false);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [level, setLevel] = useState(0);
+  const [noAudio, setNoAudio] = useState(false);
+  const [captureFailed, setCaptureFailed] = useState(false);
+  const lastAudible = useRef(Date.now());
 
   // Save Group modal
   const [groupModalOpen, setGroupModalOpen] = useState(false);
@@ -98,13 +103,20 @@ export function Popup() {
   }, [status, seeded]);
 
   // VU metre — yalnızca yakalama aktifken 200ms'de bir sorgula.
+  // Aynı zamanda "ses gelmiyor" durumunu tespit eder (uzun süre sessizlik).
   useEffect(() => {
     if (!status?.active || tabId == null) {
       setLevel(0);
+      setNoAudio(false);
       return;
     }
+    lastAudible.current = Date.now(); // aktifleşince grace süresini başlat
     const poll = window.setInterval(() => {
-      void getLevel(tabId).then(setLevel);
+      void getLevel(tabId).then((lv) => {
+        setLevel(lv);
+        if (lv > VU_THRESHOLD) lastAudible.current = Date.now();
+        setNoAudio(Date.now() - lastAudible.current > NO_AUDIO_GRACE);
+      });
     }, 200);
     return () => window.clearInterval(poll);
   }, [status?.active, tabId]);
@@ -128,9 +140,14 @@ export function Popup() {
     void enableAudio(tabId, next).then((res) => {
       enabling.current = false;
       if (res.ok) {
+        setCaptureFailed(false);
         setStatus((s) => (s ? { ...s, active: true } : s));
         if (latest.current) void updateSettings(tabId, latest.current);
+      } else if (res.reason === 'failed') {
+        // Uygun sayfada beklenmedik yakalama hatası → kullanıcıya bildir.
+        setCaptureFailed(true);
       }
+      // reason === 'restricted' → status.capturable zaten false, banner gösterir.
     });
   };
 
@@ -155,6 +172,8 @@ export function Popup() {
       void disableAudio(tabId);
       setStatus((s) => (s ? { ...s, active: false } : s));
     } else {
+      // Yakalanamaz sayfada (chrome://, mağaza, PDF) başlatmaya çalışma.
+      if (status && status.capturable === false) return;
       applyLive(currentSettings());
     }
   };
@@ -210,7 +229,22 @@ export function Popup() {
     window.close();
   };
 
-  const badge: Badge = status?.active ? 'active' : 'ready';
+  // Feedback durumu — kullanıcıya "neden çalışmıyor / ne oluyor"u net göster.
+  const capturable = status?.capturable !== false;
+  let feedbackState: EngineState | null = null;
+  if (status) {
+    if (!capturable) feedbackState = 'restricted';
+    else if (captureFailed && !status.active) feedbackState = 'capture_failed';
+    else if (status.active && noAudio) feedbackState = 'no_audio';
+  }
+  const feedbackTone = feedbackState === 'no_audio' ? 'neutral' : 'warn';
+  const badge: Badge = status?.active
+    ? feedbackState === 'no_audio'
+      ? 'attention'
+      : 'active'
+    : feedbackState
+      ? 'attention'
+      : 'ready';
 
   return (
     <div className={`popup surface-root theme-${theme}`}>
@@ -227,6 +261,7 @@ export function Popup() {
           className="icon-btn power"
           data-on={status?.active ? 'true' : 'false'}
           onClick={togglePower}
+          disabled={status != null && !capturable}
           title={status?.active ? t('power.on') : t('power.off')}
           aria-label={t('power.on')}
         >
@@ -258,6 +293,15 @@ export function Popup() {
           </div>
 
           {status.hasConflict && <div className="rule-conflict">⚠ {t('conflict.warning')}</div>}
+
+          {feedbackState && (
+            <div className={`engine-feedback tone-${feedbackTone}`}>
+              <span className="ef-icon">
+                {feedbackState === 'restricted' ? '🚫' : feedbackState === 'no_audio' ? '🔇' : '⚠'}
+              </span>
+              <span className="ef-text">{t(`feedback.${feedbackState}`)}</span>
+            </div>
+          )}
 
           {unsaved && (
             <div className="unsaved-indicator">
