@@ -15,9 +15,20 @@ import {
   type StartCaptureResponse,
   type LevelResponse,
   type PingResponse,
+  type EngineStatus,
 } from '../types/index';
 
 const engine = new ContentAudioEngine();
+
+// Motor durumu değişince background'a push et (bu frame için). Background tüm
+// frame'leri birleştirip popup'a verir — kullanıcı "neden çalışmıyor"u görür.
+engine.onStatus = (status: EngineStatus) => {
+  void chrome.runtime
+    .sendMessage({ type: MessageType.ENGINE_STATUS, payload: status })
+    .catch(() => {
+      /* background hazır değil — yoksay */
+    });
+};
 
 chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
   const msg = raw as Partial<ContentMsg> | undefined;

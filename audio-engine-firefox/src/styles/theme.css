@@ -183,6 +183,13 @@ body {
 .badge-permission .dot {
   background: var(--amber);
 }
+.badge-attention {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+.badge-attention .dot {
+  background: var(--amber);
+}
 
 /* VU nabzı — ses varken aktif rozetin noktası atar */
 .dot-pulse {

@@ -168,8 +168,42 @@ export const DEFAULT_STORAGE: StorageSchema = {
 /** Çözülen ayarın hangi katmandan geldiği. */
 export type RuleSource = 'one-off' | 'site' | 'group' | 'default';
 
-/** Popup rozeti. */
-export type Badge = 'active' | 'permission' | 'ready';
+/** Popup rozeti. attention = aktif ama ses işlenemiyor (uyarı). */
+export type Badge = 'active' | 'attention' | 'permission' | 'ready';
+
+// ---------------------------------------------------------------------------
+// Motor durumu — content engine üretir, kullanıcıya "neden çalışmıyor"u anlatır.
+// ---------------------------------------------------------------------------
+
+/**
+ * Ses motorunun bir frame'deki gerçek durumu. Popup bu duruma göre net bir
+ * feedback gösterir (kullanıcı neyin sorun olduğunu anlasın diye).
+ *  - active       → en az bir kaynak işleniyor (gerçekten boost var)
+ *  - suspended    → context askıda; kullanıcı sayfaya bir kez tıklamalı
+ *  - no_media     → sayfada oynatılan ses/video bulunamadı
+ *  - blocked_drm  → medya var ama DRM korumalı (Netflix vb.) → işlenemiyor
+ *  - blocked_cors → medya farklı kaynaktan (CORS'suz) → işlenemiyor
+ *  - idle         → motor kapalı
+ */
+export type EngineState =
+  | 'active'
+  | 'suspended'
+  | 'no_media'
+  | 'blocked_drm'
+  | 'blocked_cors'
+  | 'idle';
+
+export interface EngineStatus {
+  state: EngineState;
+  /** Zincire bağlanıp işlenen kaynak sayısı. */
+  attached: number;
+  /** Sayfada bulunan (kararı verilmiş) medya element sayısı. */
+  mediaFound: number;
+  /** DRM nedeniyle atlanan sayısı. */
+  skippedDrm: number;
+  /** CORS koruması nedeniyle atlanan sayısı. */
+  skippedCors: number;
+}
 
 /**
  * Background'ın popup'a döndürdüğü tek doğru durum.
@@ -189,6 +223,8 @@ export interface TabStatus {
   hasConflict: boolean;
   /** Mevcut sekmenin host'u (popup "Site Kaydet" için kullanır). */
   host: string;
+  /** Motorun gerçek durumu (tüm frame'ler birleştirilmiş). active iken anlamlı. */
+  engineStatus?: EngineStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +244,8 @@ export enum MessageType {
   // Content → Background
   /** Content script yüklendi — background kural varsa auto-wake başlatır. */
   CONTENT_READY = 'CONTENT_READY',
+  /** Motor durumu güncellendi (bir frame'den) — background birleştirip popup'a verir. */
+  ENGINE_STATUS = 'ENGINE_STATUS',
 }
 
 // --- Mesaj gövdeleri (discriminated union) ---
@@ -242,6 +280,11 @@ export interface MsgContentReady {
   payload: Record<string, never>;
 }
 
+export interface MsgEngineStatus {
+  type: MessageType.ENGINE_STATUS;
+  payload: EngineStatus;
+}
+
 export type SaveRulePayload =
   | { kind: 'site'; pattern: string; settings: AudioSettings }
   | { kind: 'group'; groupId: string; pattern: string; settings: AudioSettings };
@@ -257,7 +300,8 @@ export type MessagePayload =
   | MsgUpdateSettings
   | MsgGetTabStatus
   | MsgSaveRule
-  | MsgContentReady;
+  | MsgContentReady
+  | MsgEngineStatus;
 
 export type MessageOfType<T extends MessageType> = Extract<MessagePayload, { type: T }>;
 

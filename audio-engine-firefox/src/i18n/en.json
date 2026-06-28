@@ -2,8 +2,14 @@
   "brand": "Audio Engine",
 
   "badge.active": "Active",
+  "badge.attention": "Check",
   "badge.permission": "Permission Required",
   "badge.ready": "Ready",
+
+  "feedback.suspended": "Click anywhere on the page once to activate the boost.",
+  "feedback.no_media": "No playing audio found on this page yet. Start playback and it will kick in automatically.",
+  "feedback.blocked_drm": "This content is DRM-protected (e.g. Netflix), so its audio can't be boosted. Playback is unaffected.",
+  "feedback.blocked_cors": "This site's audio is served from another source without permission to process it, so it can't be boosted.",
 
   "popup.volume": "Volume",
   "popup.eq": "Equalizer",

@@ -21,6 +21,8 @@ import {
   type PingResponse,
   type TabStatus,
   type RuleSource,
+  type EngineStatus,
+  type EngineState,
 } from '../types/index';
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,38 @@ const capturing = new Set<number>();
 const tabSettings = new Map<number, CaptureSettings>();
 /** Kullanıcının elle ayar değiştirdiği sekmeler — kural değişimi bunları ezmez. */
 const userTuned = new Set<number>();
+/** Sekme → (frameId → o frame'in motor durumu). all_frames açık olduğundan
+ *  her frame kendi durumunu push eder; popup için birleştirilir. */
+const frameStatus = new Map<number, Map<number, EngineStatus>>();
+
+/** Bir sekmenin tüm frame'lerinin durumunu tek bir özet duruma indirger. */
+function mergeEngineStatus(tabId: number): EngineStatus | undefined {
+  const frames = frameStatus.get(tabId);
+  if (!frames || frames.size === 0) return undefined;
+
+  let attached = 0;
+  let mediaFound = 0;
+  let skippedDrm = 0;
+  let skippedCors = 0;
+  let anySuspended = false;
+  for (const s of frames.values()) {
+    attached += s.attached;
+    mediaFound += s.mediaFound;
+    skippedDrm += s.skippedDrm;
+    skippedCors += s.skippedCors;
+    if (s.state === 'suspended') anySuspended = true;
+  }
+
+  // Öncelik: gerçekten işlenen kaynak varsa "active"; yoksa en açıklayıcı sorun.
+  let state: EngineState;
+  if (attached > 0) state = 'active';
+  else if (anySuspended) state = 'suspended';
+  else if (skippedDrm > 0) state = 'blocked_drm';
+  else if (skippedCors > 0) state = 'blocked_cors';
+  else state = 'no_media';
+
+  return { state, attached, mediaFound, skippedDrm, skippedCors };
+}
 
 function hostFromUrl(url: string | undefined): string {
   if (!url) return '';
@@ -47,9 +81,13 @@ function hostFromUrl(url: string | undefined): string {
 // Content script iletişimi
 // ---------------------------------------------------------------------------
 
-async function sendToContent<T>(tabId: number, msg: ContentMsg): Promise<T | null> {
+async function sendToContent<T>(tabId: number, msg: ContentMsg, frameId?: number): Promise<T | null> {
   try {
-    return (await chrome.tabs.sendMessage(tabId, msg)) as T;
+    const res =
+      frameId == null
+        ? await chrome.tabs.sendMessage(tabId, msg)
+        : await chrome.tabs.sendMessage(tabId, msg, { frameId });
+    return res as T;
   } catch {
     return null; // content script yok / sayfa kısıtlı
   }
@@ -61,7 +99,8 @@ async function ensureContent(tabId: number): Promise<boolean> {
   const ping = await sendToContent<PingResponse>(tabId, { target: CONTENT_TARGET, type: 'PING' });
   if (ping?.ok) return true;
   try {
-    await chrome.tabs.executeScript(tabId, { file: 'content.js', runAt: 'document_idle' });
+    // allFrames: iframe içine gömülü oynatıcılar (film siteleri vb.) da yakalanabilsin.
+    await chrome.tabs.executeScript(tabId, { file: 'content.js', runAt: 'document_idle', allFrames: true });
   } catch {
     return false; // about:, AMO, PDF görüntüleyici vb. — enjekte edilemez
   }
@@ -121,6 +160,7 @@ function cleanupTab(tabId: number): void {
   capturing.delete(tabId);
   tabSettings.delete(tabId);
   userTuned.delete(tabId);
+  frameStatus.delete(tabId);
 }
 
 function stopTab(tabId: number): void {
@@ -171,8 +211,23 @@ EventBus.subscribe(MessageType.GET_TAB_STATUS, async (msg) => {
     sourceLabel: active && userTuned.has(tabId) ? hostFromUrl(tab?.url) : resolution.sourceLabel,
     hasConflict: resolution.hasConflict,
     host: hostFromUrl(tab?.url),
+    engineStatus: active ? mergeEngineStatus(tabId) : undefined,
   };
   return status;
+});
+
+// Content (her frame) motor durumunu push eder → birleştirmek için sakla.
+EventBus.subscribe(MessageType.ENGINE_STATUS, (msg, sender) => {
+  const tabId = sender.tab?.id;
+  if (tabId == null) return;
+  const frameId = sender.frameId ?? 0;
+  let frames = frameStatus.get(tabId);
+  if (!frames) {
+    frames = new Map();
+    frameStatus.set(tabId, frames);
+  }
+  frames.set(frameId, msg.payload);
+  // cevap yok → fire-and-forget
 });
 
 EventBus.subscribe(MessageType.SAVE_RULE, async (msg) => {
@@ -199,12 +254,27 @@ async function tryAutoWake(tabId: number): Promise<void> {
 }
 
 // Content script yüklendi (sayfa hazır) → kural varsa başlat.
+// all_frames açık: her frame ayrı CONTENT_READY gönderir.
+//  - Üst frame (frameId 0): gerçek navigasyon → durumu sıfırla, auto-wake.
+//  - Alt frame (iframe): tabı sıfırlama; sekme zaten yakalıyorsa o frame'i de başlat.
 EventBus.subscribe(MessageType.CONTENT_READY, (_msg, sender) => {
   const tabId = sender.tab?.id;
   if (tabId == null) return;
-  // Yeni document → eski motor durumu geçersiz (gerçek navigasyon olduysa).
-  if (capturing.has(tabId)) cleanupTab(tabId);
-  void tryAutoWake(tabId);
+  const frameId = sender.frameId ?? 0;
+
+  if (frameId === 0) {
+    if (capturing.has(tabId)) cleanupTab(tabId);
+    void tryAutoWake(tabId);
+    return;
+  }
+
+  // Alt frame yüklendi — sekme aktifse bu frame'i de yakalamaya dahil et.
+  if (capturing.has(tabId)) {
+    const settings = tabSettings.get(tabId);
+    if (settings) {
+      void sendToContent(tabId, { target: CONTENT_TARGET, type: 'START_CAPTURE', settings }, frameId);
+    }
+  }
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {

@@ -24,12 +24,25 @@ import {
   MAX_GAIN,
   type CaptureSettings,
   type CaptureLayer,
+  type EngineState,
+  type EngineStatus,
 } from '../types/index';
 
 const HOOK_FLAG = 'audioEngineHooked';
 
 interface HookedElement extends HTMLMediaElement {
   dataset: HTMLMediaElement['dataset'] & { audioEngineHooked?: string };
+}
+
+/** root (document veya açık shadow root) altındaki tüm media elementlerini
+ *  shadow DOM'a inerek toplar — modern oynatıcılar custom element kullanıyor. */
+function collectMedia(root: ParentNode, out: HTMLMediaElement[], depth = 0): void {
+  if (depth > 6) return; // güvenlik sınırı
+  root.querySelectorAll<HTMLElement>('video, audio, *').forEach((el) => {
+    if (el instanceof HTMLMediaElement) out.push(el);
+    const sr = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (sr) collectMedia(sr, out, depth + 1);
+  });
 }
 
 export class ContentAudioEngine {
@@ -49,6 +62,20 @@ export class ContentAudioEngine {
   private active = false;
   private settings: CaptureSettings = { volume: 1, eq: [0, 0, 0, 0, 0], drcEnabled: false, monoEnabled: false };
   private bestLayer: CaptureLayer = 'none';
+
+  // Durum sayaçları — popup'a "neden çalışmıyor"u anlatmak için.
+  private attached = 0;
+  private skippedDrm = 0;
+  private skippedCors = 0;
+  /** Context suspended olduğu için bağlanma ertelendi mi? (sesi susturmamak için) */
+  private pendingResume = false;
+
+  /** Durum değişince haber ver (content/index → background'a iletir). */
+  onStatus: ((s: EngineStatus) => void) | null = null;
+
+  private emit(): void {
+    this.onStatus?.(this.getStatus());
+  }
 
   // -------------------------------------------------------------------------
   // Kurulum
@@ -99,9 +126,23 @@ export class ContentAudioEngine {
 
   private resumeIfSuspended(): void {
     if (this.ctx && this.ctx.state === 'suspended') {
-      void this.ctx.resume().catch(() => {
-        /* jest gerekiyor; sonraki etkileşimde tekrar denenir */
-      });
+      void this.ctx
+        .resume()
+        .then(() => {
+          // Resume başarılı → context artık çalışıyor. Suspended yüzünden ertelenen
+          // bağlanmaları şimdi yap (artık ses ölmez) ve durumu güncelle.
+          if (this.ctx?.state === 'running') {
+            if (this.pendingResume) {
+              this.pendingResume = false;
+              this.attachAllMedia();
+              this.applyParams();
+            }
+            this.emit();
+          }
+        })
+        .catch(() => {
+          /* jest gerekiyor; sonraki etkileşimde tekrar denenir */
+        });
     }
   }
 
@@ -206,6 +247,8 @@ export class ContentAudioEngine {
     // orijinal ses korunur (boost yok ama video bozulmaz).
     if (el.mediaKeys != null) {
       el.dataset[HOOK_FLAG] = 'drm';
+      this.skippedDrm++;
+      this.emit();
       return;
     }
 
@@ -215,6 +258,8 @@ export class ContentAudioEngine {
       if (this.attachStream(srcObj)) {
         el.muted = true;
         el.dataset[HOOK_FLAG] = '1';
+        this.attached++;
+        this.emit();
       }
       return;
     }
@@ -222,15 +267,30 @@ export class ContentAudioEngine {
     // CORS taint guard — riskli elementi hook'lama, orijinal ses korunur.
     if (this.isTaintRisk(el)) {
       el.dataset[HOOK_FLAG] = 'taint';
+      this.skippedCors++;
+      this.emit();
       return;
+    }
+
+    // Context suspended ise (autoplay) elementi ÖLÜ context'e yönlendirmek sesi
+    // tamamen keser ve geri alınamaz. Bu yüzden bağlamayı ERTELE: context çalışır
+    // hale gelince (ilk etkileşim) resumeIfSuspended yeniden dener.
+    const ctx = this.ensureContext();
+    if (ctx.state === 'suspended') {
+      this.pendingResume = true;
+      this.resumeIfSuspended();
+      this.emit();
+      return; // flag set ETME — resume sonrası tekrar denenecek
     }
 
     // Katman 1 — MediaElementSource (çıkışı yönlendirir, çift ses olmaz).
     try {
-      const source = this.ensureContext().createMediaElementSource(el);
+      const source = ctx.createMediaElementSource(el);
       source.connect(this.entry!);
       el.dataset[HOOK_FLAG] = '1';
+      this.attached++;
       if (this.bestLayer === 'none') this.bestLayer = 'media_element';
+      this.emit();
     } catch {
       /* zaten başka context'e bağlı veya desteklenmiyor */
     }
@@ -250,9 +310,10 @@ export class ContentAudioEngine {
     }
   }
 
-  /** Mevcut tüm media elementlerini bağlar; en az biri bulunduysa true. */
+  /** Mevcut tüm media elementlerini (shadow DOM dahil) bağlar; en az biri varsa true. */
   private attachAllMedia(): boolean {
-    const media = document.querySelectorAll<HTMLMediaElement>('video, audio');
+    const media: HTMLMediaElement[] = [];
+    collectMedia(document, media);
     media.forEach((el) => this.attachElement(el as HookedElement));
     return media.length > 0;
   }
@@ -274,9 +335,9 @@ export class ContentAudioEngine {
           if (node instanceof HTMLMediaElement) {
             this.attachElement(node as HookedElement);
           } else if (node instanceof Element) {
-            node
-              .querySelectorAll<HTMLMediaElement>('video, audio')
-              .forEach((el) => this.attachElement(el as HookedElement));
+            const found: HTMLMediaElement[] = [];
+            collectMedia(node, found);
+            found.forEach((el) => this.attachElement(el as HookedElement));
           }
         });
       }
@@ -303,13 +364,14 @@ export class ContentAudioEngine {
   start(settings: CaptureSettings): CaptureLayer {
     this.settings = { ...settings, eq: [...settings.eq] };
     this.active = true;
-    this.ensureContext();
-    this.resumeIfSuspended();
-    const found = this.attachAllMedia();
     this.startObserving();
+    // attachElement context'i yalnızca medya bulununca ve gerekince oluşturur;
+    // medyası olmayan frame'ler (reklam iframe'leri) boşuna AudioContext açmaz.
+    const found = this.attachAllMedia();
     this.applyParams();
     this.applyMonoRouting();
     if (!found) void this.findAndAttach();
+    this.emit();
     return this.bestLayer;
   }
 
@@ -326,9 +388,13 @@ export class ContentAudioEngine {
    * (createMediaElementSource geri alınamaz; ses orijinal seviyesine döner.) */
   stop(): void {
     this.active = false;
-    if (!this.ctx) return;
+    if (!this.ctx) {
+      this.emit();
+      return;
+    }
     this.applyParams();
     this.applyMonoRouting();
+    this.emit();
   }
 
   isActive(): boolean {
@@ -337,6 +403,34 @@ export class ContentAudioEngine {
 
   getLayer(): CaptureLayer {
     return this.bestLayer;
+  }
+
+  /** Motorun gerçek durumu — popup feedback'i bunu gösterir. */
+  getStatus(): EngineStatus {
+    const ctxRunning = this.ctx?.state === 'running';
+    let state: EngineState;
+    if (!this.active) {
+      state = 'idle';
+    } else if (this.attached > 0 && ctxRunning) {
+      state = 'active';
+    } else if (this.pendingResume || this.ctx?.state === 'suspended') {
+      state = 'suspended';
+    } else if (this.skippedDrm > 0 && this.attached === 0) {
+      state = 'blocked_drm';
+    } else if (this.skippedCors > 0 && this.attached === 0) {
+      state = 'blocked_cors';
+    } else if (this.attached > 0) {
+      state = 'active';
+    } else {
+      state = 'no_media';
+    }
+    return {
+      state,
+      attached: this.attached,
+      mediaFound: this.attached + this.skippedDrm + this.skippedCors,
+      skippedDrm: this.skippedDrm,
+      skippedCors: this.skippedCors,
+    };
   }
 
   /** VU seviyesi — offscreen.ts ile aynı hesap. */

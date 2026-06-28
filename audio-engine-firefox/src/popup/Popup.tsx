@@ -109,6 +109,18 @@ export function Popup() {
     return () => window.clearInterval(poll);
   }, [status?.active, tabId]);
 
+  // Durum tazeleme — motor durumu (active/suspended/no_media/blocked) değişebilir
+  // (ör. kullanıcı sayfaya tıklayınca suspended→active). Popup açıkken periyodik çek.
+  useEffect(() => {
+    if (tabId == null) return;
+    const poll = window.setInterval(() => {
+      void getTabStatus(tabId).then((s) => {
+        if (s) setStatus(s);
+      });
+    }, 1000);
+    return () => window.clearInterval(poll);
+  }, [tabId]);
+
   const currentSettings = useCallback(
     (): CaptureSettings => ({ volume: vol / 100, eq, drcEnabled: drcOn, monoEnabled: monoOn }),
     [vol, eq, drcOn, monoOn],
@@ -210,7 +222,15 @@ export function Popup() {
     window.close();
   };
 
-  const badge: Badge = status?.active ? 'active' : 'ready';
+  // Motor gerçekten ses işliyor mu? engineStatus.state buna karar verir.
+  const engineState = status?.engineStatus?.state;
+  const engineWorking = !engineState || engineState === 'active';
+  // Aktif ama ses işlenemiyorsa (suspended/no_media/blocked) "attention" (amber).
+  const badge: Badge = status?.active ? (engineWorking ? 'active' : 'attention') : 'ready';
+  // Aktif ve bir sorun varsa kullanıcıya net feedback göster.
+  const feedbackState =
+    status?.active && engineState && engineState !== 'active' ? engineState : null;
+  const feedbackTone = feedbackState === 'no_media' ? 'neutral' : 'warn';
 
   return (
     <div className={`popup surface-root theme-${theme}`}>
@@ -258,6 +278,13 @@ export function Popup() {
           </div>
 
           {status.hasConflict && <div className="rule-conflict">⚠ {t('conflict.warning')}</div>}
+
+          {feedbackState && (
+            <div className={`engine-feedback tone-${feedbackTone}`}>
+              <span className="ef-icon">{feedbackState === 'suspended' ? '👆' : feedbackState === 'no_media' ? '🔍' : '⚠'}</span>
+              <span className="ef-text">{t(`feedback.${feedbackState}`)}</span>
+            </div>
+          )}
 
           {unsaved && (
             <div className="unsaved-indicator">

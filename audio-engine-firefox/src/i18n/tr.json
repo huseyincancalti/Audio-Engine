@@ -2,8 +2,14 @@
   "brand": "Audio Engine",
 
   "badge.active": "Aktif",
+  "badge.attention": "Dikkat",
   "badge.permission": "İzin Gerekli",
   "badge.ready": "Hazır",
+
+  "feedback.suspended": "Sesi etkinleştirmek için sayfada herhangi bir yere bir kez tıklayın.",
+  "feedback.no_media": "Bu sayfada henüz oynatılan ses bulunamadı. Oynatmayı başlatın, otomatik devreye girer.",
+  "feedback.blocked_drm": "Bu içerik DRM korumalı (ör. Netflix); sesi yükseltilemiyor. Oynatma etkilenmez.",
+  "feedback.blocked_cors": "Bu sitenin sesi, işlenmesine izin vermeyen farklı bir kaynaktan geliyor; bu yüzden yükseltilemiyor.",
 
   "popup.volume": "Ses",
   "popup.eq": "Ekolayzır",

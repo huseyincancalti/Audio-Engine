@@ -12,7 +12,7 @@ import { build as viteBuild } from "vite";
 import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdirSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import zlib from "node:zlib";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +22,11 @@ const DIST = r("dist");
 async function main() {
   console.log("→ [1/4] Vite build (popup + options)...");
   await viteBuild({ configFile: r("vite.config.ts"), logLevel: "warn" });
+  // Firefox düzeltmesi: Vite, extension sayfalarında çalışmayan crossorigin
+  // attribute'ları ve dış Google Fonts linkleri üretir. moz-extension:// kaynakları
+  // CORS başlığı dönmediği için crossorigin'li CSS yüklenmez (sayfa stilsiz kalır);
+  // LibreWolf dış istekleri bloklar. Bu yüzden HTML'i her build'de temizliyoruz.
+  fixExtensionHtml();
 
   console.log("→ [2/4] esbuild (background + content, IIFE)...");
   await esbuild.build({
@@ -50,6 +55,32 @@ async function main() {
 
   console.log("\n✅ Build tamamlandı → dist/");
   console.log("   Firefox → about:debugging → This Firefox → 'Load Temporary Add-on' → dist/manifest.json");
+}
+
+// ---------------------------------------------------------------------------
+// Firefox HTML temizliği — crossorigin attribute'larını ve Google Fonts
+// linklerini kaldır (extension sayfalarında çalışmaz / CSS'i kırar).
+// ---------------------------------------------------------------------------
+
+function fixExtensionHtml() {
+  const files = [
+    resolve(DIST, "src/popup/index.html"),
+    resolve(DIST, "src/options/index.html"),
+  ];
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    let html = readFileSync(file, "utf8");
+    // 1) crossorigin attribute'larını kaldır (bare attribute, değersiz).
+    html = html.replace(/\s+crossorigin(?:="[^"]*")?/g, "");
+    // 2) Google Fonts <link> etiketlerini kaldır (çok satırlı olabilir).
+    html = html.replace(
+      /<link\b[^>]*?(?:fonts\.googleapis|fonts\.gstatic)[^>]*>/gi,
+      "",
+    );
+    // 3) Arta kalan boş satırları sadeleştir.
+    html = html.replace(/\n\s*\n\s*\n/g, "\n\n");
+    writeFileSync(file, html);
+  }
 }
 
 // ---------------------------------------------------------------------------
