@@ -13,8 +13,16 @@
 import { build as viteBuild } from "vite";
 import * as esbuild from "esbuild";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { mkdirSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import {
+  mkdirSync,
+  writeFileSync,
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import zlib from "node:zlib";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,8 +65,109 @@ async function main() {
   if (!existsSync(manifestSrc)) throw new Error("public/manifest.json bulunamadı");
   copyFileSync(manifestSrc, resolve(DIST, "manifest.json"));
 
+  console.log("→ [5/5] audio-engine-chrome.zip paketleniyor...");
+  zipDirectory(DIST, r("audio-engine-chrome.zip"));
+
   console.log("\n✅ Build tamamlandı → dist/");
   console.log("   Chrome → chrome://extensions → Developer mode → 'Load unpacked' → dist/");
+  console.log("   Paket → audio-engine-chrome.zip (Web Store / paylaşım için)");
+}
+
+// ---------------------------------------------------------------------------
+// ZIP paketleyici — bağımlılıksız, dosya yollarını daima "/" ile yazar.
+// PowerShell'in Compress-Archive'ı Windows'ta "\" ayraçlı path üretiyor;
+// bu ZIP spesifikasyonunu ihlal eder ve bazı okuyucularda (örn. Firefox'un
+// XPI okuyucusu) manifest'teki path'ler bulunamıyor. Bu yüzden ZIP'i
+// burada elle, doğru yazıyoruz.
+// ---------------------------------------------------------------------------
+
+function listFiles(dir, base = dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = resolve(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) {
+      out.push(...listFiles(full, base));
+    } else {
+      const rel = full.slice(base.length + 1).split(sep).join("/");
+      out.push({ full, rel });
+    }
+  }
+  return out;
+}
+
+function buildZip(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const time = 0;
+  const date = 0x21; // 1980-01-01 — reproducible build
+
+  for (const { full, rel } of files) {
+    const data = readFileSync(full);
+    const crc = crc32(data);
+    const compressed = zlib.deflateRawSync(data, { level: 9 });
+    const useCompressed = compressed.length < data.length;
+    const method = useCompressed ? 8 : 0;
+    const payload = useCompressed ? compressed : data;
+    const nameBuf = Buffer.from(rel, "utf8");
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(method, 8);
+    localHeader.writeUInt16LE(time, 10);
+    localHeader.writeUInt16LE(date, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(payload.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBuf.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+    localParts.push(localHeader, nameBuf, payload);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(method, 10);
+    centralHeader.writeUInt16LE(time, 12);
+    centralHeader.writeUInt16LE(date, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(payload.length, 20);
+    centralHeader.writeUInt32LE(data.length, 24);
+    centralHeader.writeUInt16LE(nameBuf.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuf);
+
+    offset += localHeader.length + nameBuf.length + payload.length;
+  }
+
+  const centralOffset = offset;
+  const centralSize = centralParts.reduce((s, b) => s + b.length, 0);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  end.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+function zipDirectory(dir, outFile) {
+  const files = listFiles(dir).filter((f) => resolve(f.full) !== resolve(outFile));
+  writeFileSync(outFile, buildZip(files));
 }
 
 // ---------------------------------------------------------------------------
