@@ -10,6 +10,7 @@
   "feedback.no_media": "Bu sayfada henüz oynatılan ses bulunamadı. Oynatmayı başlatın, otomatik devreye girer.",
   "feedback.blocked_drm": "Bu içerik DRM korumalı (ör. Netflix); sesi yükseltilemiyor. Oynatma etkilenmez.",
   "feedback.blocked_cors": "Bu sitenin sesi, işlenmesine izin vermeyen farklı bir kaynaktan geliyor; bu yüzden yükseltilemiyor.",
+  "feedback.partial": "Bu sayfada kontrol dışı kalan başka bir ses kaynağı da var (DRM korumalı veya farklı kaynaklı) — ses ayarı onu etkilemez, %0'da bile tam susmayabilir.",
 
   "popup.volume": "Ses",
   "popup.eq": "Ekolayzır",

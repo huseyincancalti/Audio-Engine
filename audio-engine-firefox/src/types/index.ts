@@ -178,7 +178,10 @@ export type Badge = 'active' | 'attention' | 'permission' | 'ready';
 /**
  * Ses motorunun bir frame'deki gerçek durumu. Popup bu duruma göre net bir
  * feedback gösterir (kullanıcı neyin sorun olduğunu anlasın diye).
- *  - active       → en az bir kaynak işleniyor (gerçekten boost var)
+ *  - active       → tüm bulunan kaynaklar işleniyor (tam kontrol)
+ *  - partial      → en az bir kaynak işleniyor AMA aynı sayfada DRM/CORS
+ *                   yüzünden atlanmış BAŞKA bir kaynak da var — ses seviyesi
+ *                   ayarı o atlanan kaynağı etkilemez, tam susturma garanti değil
  *  - suspended    → context askıda; kullanıcı sayfaya bir kez tıklamalı
  *  - no_media     → sayfada oynatılan ses/video bulunamadı
  *  - blocked_drm  → medya var ama DRM korumalı (Netflix vb.) → işlenemiyor
@@ -187,6 +190,7 @@ export type Badge = 'active' | 'attention' | 'permission' | 'ready';
  */
 export type EngineState =
   | 'active'
+  | 'partial'
   | 'suspended'
   | 'no_media'
   | 'blocked_drm'

@@ -409,8 +409,13 @@ export class ContentAudioEngine {
   getStatus(): EngineStatus {
     const ctxRunning = this.ctx?.state === 'running';
     let state: EngineState;
+    const hasSkipped = this.skippedDrm > 0 || this.skippedCors > 0;
     if (!this.active) {
       state = 'idle';
+    } else if (this.attached > 0 && ctxRunning && hasSkipped) {
+      // Bu frame'de bağlı kaynak var AMA atlanan başka kaynak da var —
+      // ses ayarı o atlanan kaynağı etkilemez.
+      state = 'partial';
     } else if (this.attached > 0 && ctxRunning) {
       state = 'active';
     } else if (this.pendingResume || this.ctx?.state === 'suspended') {

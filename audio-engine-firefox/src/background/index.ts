@@ -57,9 +57,12 @@ function mergeEngineStatus(tabId: number): EngineStatus | undefined {
     if (s.state === 'suspended') anySuspended = true;
   }
 
-  // Öncelik: gerçekten işlenen kaynak varsa "active"; yoksa en açıklayıcı sorun.
+  // Öncelik: bağlı kaynak var AMA atlanan başka kaynak da varsa "partial" —
+  // ses ayarı o atlanan kaynağı etkilemez, %0 bile tam susturmayabilir.
+  // Sadece bağlı kaynak varsa (atlanan yok) tam "active".
   let state: EngineState;
-  if (attached > 0) state = 'active';
+  if (attached > 0 && (skippedDrm > 0 || skippedCors > 0)) state = 'partial';
+  else if (attached > 0) state = 'active';
   else if (anySuspended) state = 'suspended';
   else if (skippedDrm > 0) state = 'blocked_drm';
   else if (skippedCors > 0) state = 'blocked_cors';
