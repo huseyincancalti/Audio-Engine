@@ -310,12 +310,18 @@ export class ContentAudioEngine {
     }
   }
 
-  /** Mevcut tüm media elementlerini (shadow DOM dahil) bağlar; en az biri varsa true. */
+  /** Mevcut tüm media elementlerini (shadow DOM dahil) bağlar; en az biri
+   *  GERÇEKTEN işlendiyse (bağlandı ya da DRM/CORS nedeniyle kesin atlandı) true.
+   *  Salt DOM'da <video> bulunması yetmez — ör. YouTube'da element DOM'a
+   *  eklenmiş ama henüz currentSrc/blob ataması yapılmamış olabilir; bu durumda
+   *  attachElement sessizce erken çıkar ve element hook'lanmaz. Eskiden burada
+   *  "media.length > 0" dönüyordu ve bu, aşağıdaki findAndAttach'ın yeniden
+   *  denemesini gereksiz yere durduruyordu — element sonsuza dek askıda kalıyordu. */
   private attachAllMedia(): boolean {
     const media: HTMLMediaElement[] = [];
     collectMedia(document, media);
     media.forEach((el) => this.attachElement(el as HookedElement));
-    return media.length > 0;
+    return this.attached + this.skippedDrm + this.skippedCors > 0;
   }
 
   /** DOM'da henüz media yoksa üstel geri çekilme ile tekrar dener. */
@@ -344,16 +350,22 @@ export class ContentAudioEngine {
     });
     this.observer.observe(document.documentElement, { childList: true, subtree: true });
 
-    // Play event: oynatma başlayınca bağla (geç oluşturulan elementler için).
-    document.addEventListener(
-      'play',
-      (e) => {
-        if (e.target instanceof HTMLMediaElement) {
-          this.attachElement(e.target as HookedElement);
-        }
-      },
-      true,
-    );
+    // Oynatma/kaynak-hazır sinyalleri: erken hook denemesi currentSrc yokluğu
+    // yüzünden sessizce başarısız olduysa (attachElement early-return), bu
+    // event'lerden biri geldiğinde tekrar denenir. Sadece 'play'e güvenmek
+    // yetersiz — MSE/blob tabanlı oynatıcılarda (YouTube gibi) src, 'play'
+    // tetiklenmeden önce veya sonra farklı zamanlarda hazır olabilir.
+    for (const ev of ['play', 'playing', 'loadedmetadata'] as const) {
+      document.addEventListener(
+        ev,
+        (e) => {
+          if (e.target instanceof HTMLMediaElement) {
+            this.attachElement(e.target as HookedElement);
+          }
+        },
+        true,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
