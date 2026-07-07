@@ -10,7 +10,8 @@
   "feedback.no_media": "No playing audio found on this page yet. Start playback and it will kick in automatically.",
   "feedback.blocked_drm": "This content is DRM-protected (e.g. Netflix), so its audio can't be boosted. Playback is unaffected.",
   "feedback.blocked_cors": "This site's audio is served from another source without permission to process it, so it can't be boosted.",
-  "feedback.partial": "This page has another audio source outside our control (DRM-protected or cross-origin) — your volume setting won't affect it, so it may not go fully silent even at 0%.",
+  "feedback.partial": "This page also has an audio source that can't be boosted (DRM-protected or cross-origin) — lowering the volume still works, but boosting above 100% won't affect it.",
+  "feedback.attach_failed": "Couldn't hook into this page's audio — boosting above 100% is unavailable for now (lowering still works). Refresh the page and try again.",
 
   "popup.volume": "Volume",
   "popup.eq": "Equalizer",

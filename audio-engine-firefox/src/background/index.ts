@@ -48,27 +48,31 @@ function mergeEngineStatus(tabId: number): EngineStatus | undefined {
   let mediaFound = 0;
   let skippedDrm = 0;
   let skippedCors = 0;
+  let attachFailed = 0;
   let anySuspended = false;
   for (const s of frames.values()) {
     attached += s.attached;
     mediaFound += s.mediaFound;
     skippedDrm += s.skippedDrm;
     skippedCors += s.skippedCors;
+    attachFailed += s.attachFailed ?? 0;
     if (s.state === 'suspended') anySuspended = true;
   }
 
-  // Öncelik: bağlı kaynak var AMA atlanan başka kaynak da varsa "partial" —
-  // ses ayarı o atlanan kaynağı etkilemez, %0 bile tam susturmayabilir.
-  // Sadece bağlı kaynak varsa (atlanan yok) tam "active".
+  // Öncelik: bağlı kaynak var AMA atlanan/başarısız başka kaynak da varsa
+  // "partial" — %100 üzeri boost o kaynağı etkilemez (kısma yine çalışır).
+  // suspended, attach_failed'den önce: tek tık çözer, "yenile" demeye gerek yok.
+  // attach_failed, blocked_drm'den önce: yenileme eyleme dönük bir öneri.
   let state: EngineState;
-  if (attached > 0 && (skippedDrm > 0 || skippedCors > 0)) state = 'partial';
+  if (attached > 0 && (skippedDrm > 0 || skippedCors > 0 || attachFailed > 0)) state = 'partial';
   else if (attached > 0) state = 'active';
   else if (anySuspended) state = 'suspended';
+  else if (attachFailed > 0) state = 'attach_failed';
   else if (skippedDrm > 0) state = 'blocked_drm';
   else if (skippedCors > 0) state = 'blocked_cors';
   else state = 'no_media';
 
-  return { state, attached, mediaFound, skippedDrm, skippedCors };
+  return { state, attached, mediaFound, skippedDrm, skippedCors, attachFailed };
 }
 
 function hostFromUrl(url: string | undefined): string {

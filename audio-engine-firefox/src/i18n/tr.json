@@ -10,7 +10,8 @@
   "feedback.no_media": "Bu sayfada henüz oynatılan ses bulunamadı. Oynatmayı başlatın, otomatik devreye girer.",
   "feedback.blocked_drm": "Bu içerik DRM korumalı (ör. Netflix); sesi yükseltilemiyor. Oynatma etkilenmez.",
   "feedback.blocked_cors": "Bu sitenin sesi, işlenmesine izin vermeyen farklı bir kaynaktan geliyor; bu yüzden yükseltilemiyor.",
-  "feedback.partial": "Bu sayfada kontrol dışı kalan başka bir ses kaynağı da var (DRM korumalı veya farklı kaynaklı) — ses ayarı onu etkilemez, %0'da bile tam susmayabilir.",
+  "feedback.partial": "Bu sayfada yükseltilemeyen bir ses kaynağı da var (DRM korumalı veya farklı kaynaklı) — ses kısma çalışır ama %100 üzeri yükseltme o kaynağı etkilemez.",
+  "feedback.attach_failed": "Sayfanın sesine bağlanılamadı — %100 üzeri yükseltme şu an devre dışı (ses kısma çalışır). Sayfayı yenileyip tekrar deneyin.",
 
   "popup.volume": "Ses",
   "popup.eq": "Ekolayzır",

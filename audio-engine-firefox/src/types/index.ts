@@ -184,6 +184,8 @@ export type Badge = 'active' | 'attention' | 'permission' | 'ready';
  *                   ayarı o atlanan kaynağı etkilemez, tam susturma garanti değil
  *  - suspended    → context askıda; kullanıcı sayfaya bir kez tıklamalı
  *  - no_media     → sayfada oynatılan ses/video bulunamadı
+ *  - attach_failed→ medya var ama zincire bağlanamadı (ör. element başka bir
+ *                   context'e bağlı) — sayfa yenilemek gerekebilir
  *  - blocked_drm  → medya var ama DRM korumalı (Netflix vb.) → işlenemiyor
  *  - blocked_cors → medya farklı kaynaktan (CORS'suz) → işlenemiyor
  *  - idle         → motor kapalı
@@ -193,6 +195,7 @@ export type EngineState =
   | 'partial'
   | 'suspended'
   | 'no_media'
+  | 'attach_failed'
   | 'blocked_drm'
   | 'blocked_cors'
   | 'idle';
@@ -207,6 +210,8 @@ export interface EngineStatus {
   skippedDrm: number;
   /** CORS koruması nedeniyle atlanan sayısı. */
   skippedCors: number;
+  /** Bağlanma denenip başarısız olan kaynak sayısı. */
+  attachFailed: number;
 }
 
 /**
